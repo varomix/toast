@@ -44,6 +44,13 @@ class TestGuide(unittest.TestCase):
             with self.subTest(code=code.splitlines()[0]):
                 toast.compile_source(code, run_over=run_over)
 
+    def test_html_guide_is_up_to_date(self):
+        import subprocess
+
+        proc = subprocess.run([sys.executable, str(ROOT / "docs" / "build_guide.py"), "--check"],
+                              capture_output=True, text=True)  # fmt: skip
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
     def test_every_template_compiles(self):
         templates = sorted((ROOT / "toast" / "templates").glob("*.py"))
         self.assertGreaterEqual(len(templates), 9)

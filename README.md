@@ -1,6 +1,8 @@
 # Toast frontend
 
-Python goes in, native code pops out. **Using Toast: see [docs/guide.md](docs/guide.md)** (language, builtins, cookbook).
+Python goes in, native code pops out. **Using Toast: see [docs/guide.md](docs/guide.md)** (language, builtins, cookbook),
+also as a page to open in a browser: `docs/guide.html` (rebuild it with `python3 docs/build_guide.py`
+after editing the guide; a test checks it is up to date).
 This README is for developing Toast itself. This folder holds the Toast frontend (the future add-on)
 and its runtime header. It has no Blender dependency; `harness.py` runs kernels on numpy arrays
 the way the fork's `GeometryNodeToast` will. User guide: `docs/guide.md`.

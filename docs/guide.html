@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Toast guide</title>
+<meta name="description" content="Toast: Python-syntax kernels for Blender geometry nodes, compiled to native code.">
+<style>
+:root {
+  --bg: #faf7f2; --bg-soft: #f3ede4; --panel: #ffffff; --text: #2b241d; --muted: #6f6357;
+  --line: #e6ddd0; --accent: #b8621b; --accent-soft: #f6e6d4; --link: #9a4f12;
+  --code-bg: #f6f1ea; --code-text: #3a2f25; --inline-bg: #f1e9de;
+  --tk-kw: #a1356b; --tk-fn: #1f6f8b; --tk-type: #6b4fbb; --tk-attr: #b8621b; --tk-num: #2f7d4a;
+  --tk-str: #8a6a12; --tk-com: #8f8478;
+  --shadow: 0 1px 2px rgba(60, 40, 20, .06), 0 4px 16px rgba(60, 40, 20, .05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15120f; --bg-soft: #1c1814; --panel: #1f1a16; --text: #ebe3d9; --muted: #a59988;
+    --line: #2f2822; --accent: #f0a050; --accent-soft: #3a2a1a; --link: #f3b26e;
+    --code-bg: #1a1612; --code-text: #e6ddd2; --inline-bg: #2a231d;
+    --tk-kw: #f28fbf; --tk-fn: #6cc3df; --tk-type: #b9a2ff; --tk-attr: #f0a050;
+    --tk-num: #8fd19e; --tk-str: #e6c66e; --tk-com: #857a6e;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 20px rgba(0, 0, 0, .25);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15120f; --bg-soft: #1c1814; --panel: #1f1a16; --text: #ebe3d9; --muted: #a59988;
+  --line: #2f2822; --accent: #f0a050; --accent-soft: #3a2a1a; --link: #f3b26e;
+  --code-bg: #1a1612; --code-text: #e6ddd2; --inline-bg: #2a231d;
+  --tk-kw: #f28fbf; --tk-fn: #6cc3df; --tk-type: #b9a2ff; --tk-attr: #f0a050;
+  --tk-num: #8fd19e; --tk-str: #e6c66e; --tk-com: #857a6e;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 20px rgba(0, 0, 0, .25);
+}
+* { box-sizing: border-box; }
+html { scroll-padding-top: 24px; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+code, pre { font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; }
+a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+.layout { display: grid; grid-template-columns: 272px minmax(0, 1fr); min-height: 100vh; }
+.sidebar {
+  position: sticky; top: 0; height: 100vh; overflow-y: auto; padding: 28px 18px 40px 24px;
+  border-right: 1px solid var(--line); background: var(--bg-soft);
+}
+.brand { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.brand svg { width: 30px; height: 30px; flex: none; }
+.brand strong { font-size: 20px; letter-spacing: -.01em; }
+.version { color: var(--muted); font-size: 13px; margin: 0 0 22px 40px; }
+.toc { list-style: none; margin: 0; padding: 0; font-size: 14px; }
+.toc a {
+  display: block; padding: 4px 10px; border-radius: 6px; color: var(--muted); text-decoration: none;
+  border-left: 2px solid transparent;
+}
+.toc a:hover { color: var(--text); background: var(--accent-soft); }
+.toc a.active { color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); }
+.toc .l2 > a { color: var(--text); font-weight: 600; margin-top: 10px; }
+.toc .l2 > a.active { color: var(--accent); }
+.toc .l3 > a { padding-left: 22px; font-size: 13.5px; }
+.theme {
+  margin-top: 26px; display: inline-flex; border: 1px solid var(--line); border-radius: 8px;
+  overflow: hidden; background: var(--panel);
+}
+.theme button {
+  border: 0; background: none; color: var(--muted); font: inherit; font-size: 12.5px;
+  padding: 5px 10px; cursor: pointer;
+}
+.theme button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+
+main { padding: 48px 56px 120px; max-width: 900px; width: 100%; }
+.hero {
+  padding: 34px 36px; border-radius: 16px; margin-bottom: 40px; background:
+  radial-gradient(120% 140% at 0% 0%, var(--accent-soft) 0%, transparent 60%), var(--panel);
+  border: 1px solid var(--line); box-shadow: var(--shadow);
+}
+.hero h1 { margin: 0 0 6px; font-size: 40px; line-height: 1.1; letter-spacing: -.02em; }
+.hero p { font-size: 17.5px; color: var(--muted); margin: 0 0 22px; max-width: 640px; }
+.hero figure.code { margin-bottom: 0; }
+
+h2 {
+  font-size: 28px; letter-spacing: -.015em; margin: 56px 0 14px; padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+h3 { font-size: 19.5px; margin: 34px 0 8px; }
+h2 a.anchor, h3 a.anchor { color: inherit; text-decoration: none; }
+h2 a.anchor:hover::after, h3 a.anchor:hover::after { content: " #"; color: var(--accent); }
+p, ul, ol { margin: 10px 0 14px; }
+li { margin: 5px 0; }
+li::marker { color: var(--accent); }
+strong { font-weight: 650; }
+:not(pre) > code {
+  background: var(--inline-bg); padding: 1px 6px; border-radius: 5px; font-size: .88em;
+  white-space: nowrap;
+}
+
+figure.code {
+  margin: 18px 0 22px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line);
+  background: var(--code-bg); box-shadow: var(--shadow);
+}
+figure.code figcaption {
+  display: flex; justify-content: space-between; align-items: center; padding: 7px 10px 7px 16px;
+  font-size: 12.5px; color: var(--muted); border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--code-bg) 70%, var(--line));
+}
+.copy {
+  border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 6px;
+  font: inherit; font-size: 12px; padding: 2px 9px; cursor: pointer;
+}
+.copy:hover { color: var(--accent); border-color: var(--accent); }
+pre { margin: 0; padding: 14px 18px; overflow-x: auto; font-size: 14px; line-height: 1.6;
+  color: var(--code-text); tab-size: 4; }
+.kw { color: var(--tk-kw); font-weight: 600; }
+.fn { color: var(--tk-fn); }
+.type { color: var(--tk-type); }
+.attr { color: var(--tk-attr); font-weight: 600; }
+.number { color: var(--tk-num); }
+.string { color: var(--tk-str); }
+.comment { color: var(--tk-com); font-style: italic; }
+
+.table { overflow-x: auto; margin: 16px 0 22px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--panel); box-shadow: var(--shadow); }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 14px; vertical-align: top; border-bottom: 1px solid var(--line); }
+th { background: var(--bg-soft); font-weight: 650; font-size: 13px; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted); }
+tr:last-child td { border-bottom: 0; }
+td:first-child code { white-space: normal; }
+
+.menu { display: none; }
+footer { margin-top: 72px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted);
+  font-size: 13.5px; }
+
+@media (max-width: 900px) {
+  .layout { display: block; }
+  .sidebar { position: fixed; inset: 0 25% 0 0; max-width: 320px; z-index: 10; transform: translateX(-102%);
+    transition: transform .2s ease; box-shadow: var(--shadow); }
+  body.nav-open .sidebar { transform: none; }
+  .menu {
+    display: inline-flex; position: sticky; top: 12px; z-index: 5; margin: 12px 16px 0;
+    border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 8px;
+    padding: 6px 12px; font: inherit; font-size: 14px; box-shadow: var(--shadow);
+  }
+  main { padding: 20px 16px 80px; }
+  .hero { padding: 24px 20px; }
+  .hero h1 { font-size: 32px; }
+  h2 { font-size: 24px; }
+}
+@media print {
+  .sidebar, .menu, .copy, .theme { display: none !important; }
+  .layout { display: block; }
+  main { max-width: none; padding: 0; }
+}
+</style>
+</head>
+<body>
+<button class="menu" type="button" aria-label="Contents">☰ Contents</button>
+<div class="layout">
+<nav class="sidebar" aria-label="Contents">
+<div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="6" width="26" height="22" rx="7"
+fill="#e9b46a"/><path d="M6 13c0-4 4-7 10-7s10 3 10 7v11a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" fill="#f6d9a5"/>
+<path d="M11 17h10M11 21h7" stroke="#b8621b" stroke-width="2" stroke-linecap="round"/></svg><strong>Toast</strong></div>
+<p class="version">Guide · version 0.10.0</p>
+<ul class="toc"><li class="l2"><a href="#setting-up">Setting up</a></li><li class="l3"><a href="#editing">Editing</a></li><li class="l2"><a href="#the-node">The node</a></li><li class="l2"><a href="#language">Language</a></li><li class="l3"><a href="#lists">Lists</a></li><li class="l3"><a href="#rotations-and-transforms">Rotations and transforms</a></li><li class="l3"><a href="#attributes">Attributes</a></li><li class="l3"><a href="#parameters">Parameters</a></li><li class="l3"><a href="#helpers-and-libraries">Helpers and libraries</a></li><li class="l2"><a href="#builtins">Builtins</a></li><li class="l3"><a href="#math">Math</a></li><li class="l3"><a href="#noise-and-random">Noise and random</a></li><li class="l3"><a href="#reading-geometry">Reading geometry</a></li><li class="l3"><a href="#changing-geometry">Changing geometry</a></li><li class="l2"><a href="#cookbook">Cookbook</a></li><li class="l3"><a href="#thin-out-points-at-random">Thin out points at random</a></li><li class="l3"><a href="#smooth-a-mesh">Smooth a mesh</a></li><li class="l3"><a href="#drop-points-onto-a-surface">Drop points onto a surface</a></li><li class="l3"><a href="#shrink-wrap-to-the-closest-surface">Shrink-wrap to the closest surface</a></li><li class="l3"><a href="#transfer-a-color-from-another-mesh">Transfer a color from another mesh</a></li><li class="l3"><a href="#color-by-voronoi-cell">Color by Voronoi cell</a></li><li class="l3"><a href="#grow-hairs-along-the-normal">Grow hairs along the normal</a></li><li class="l3"><a href="#delete-faces-that-point-down-run-over-faces">Delete faces that point down (Run Over: Faces)</a></li><li class="l3"><a href="#build-a-grid-from-scratch-run-over-geometry">Build a grid from scratch (Run Over: Geometry)</a></li><li class="l3"><a href="#swirl-points-with-curl-noise">Swirl points with curl noise</a></li><li class="l3"><a href="#randomize-instances-run-over-instances">Randomize instances (Run Over: Instances)</a></li><li class="l3"><a href="#keep-half-of-the-curves-run-over-curves">Keep half of the curves (Run Over: Curves)</a></li><li class="l3"><a href="#mark-where-faces-touch-each-point-run-over-faces">Mark where faces touch each point (Run Over: Faces)</a></li><li class="l2"><a href="#errors">Errors</a></li><li class="l2"><a href="#limits">Limits</a></li></ul>
+<div class="theme" role="group" aria-label="Theme">
+<button type="button" data-theme="light">Light</button><button type="button" data-theme="auto">Auto</button><button type="button" data-theme="dark">Dark</button>
+</div>
+</nav>
+<main>
+<header class="hero"><h1>Toast guide</h1><p>Toast lets you write the inside of a geometry node in Python syntax. The code runs once per point (or face, edge, corner, curve, instance), on every CPU core, compiled to native code: no Python runs while Blender evaluates the node tree.</p><figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code>amp = <span class="fn">param</span>(<span class="string">"amp"</span>, <span class="number">0.2</span>)
+n = <span class="fn">noise</span>(<span class="attr">@position</span> * <span class="fn">param</span>(<span class="string">"freq"</span>, <span class="number">4.0</span>))
+<span class="attr">@position</span> += <span class="attr">@normal</span> * n * amp
+<span class="attr">@height</span>: <span class="type">float</span> = n</code></pre></figure></header>
+<h2 id="setting-up"><a class="anchor" href="#setting-up">Setting up</a></h2>
+<ol><li>Use the Blender build from the <code>toast</code> fork branch, and enable the <strong>Toast</strong> add-on (Preferences &gt; Add-ons).</li><li>Allow <strong>Auto Run Python Scripts</strong> (Preferences &gt; Save &amp; Load), or trust the file. Toast code in a <code>.blend</code> runs native code, so it follows the same rule as Python drivers.</li><li>In a Geometry Nodes tree, add <strong>Toast &gt; Toast</strong>. In the sidebar (N) &gt; Node &gt; Toast, press <strong>New</strong> to create a text with starter code, or pick one from <strong>Templates</strong>.</li></ol>
+<p>The node recompiles a moment after you stop typing: Blender's built-in compiler turns the code into native code in about 0.1 s, and reopening a file reuses the compiled code. Don't press Run Script in the Text Editor: Toast code isn't plain Python.</p>
+<h3 id="editing"><a class="anchor" href="#editing">Editing</a></h3>
+<ul><li><strong>Follow Active Node</strong> (on by default, in the Toast panel and the add-on preferences): selecting a Toast node shows its code in the Text Editor of the same window. Turn it off to keep the Text Editor on whatever you are editing.</li><li><strong>Templates</strong>: starter code for common jobs (noise, smoothing, scattering onto a surface, curves, instances...). In the node's Toast panel, a template is used by the node and sets its Run Over; in the Text Editor (Templates &gt; Toast) it only creates the text.</li><li><strong>Errors</strong> show on the node header, in the node's Toast panel and in the Text Editor's sidebar (N) &gt; Toast, with <strong>Go to Error</strong>, which puts the cursor on the line (also inside a library).</li><li><strong>Status</strong>: the Toast panels say whether the code is up to date, waiting for you to stop typing, or reused from an earlier compile.</li></ul>
+<h2 id="the-node"><a class="anchor" href="#the-node">The node</a></h2>
+<div class="table"><table><thead><tr><th>Socket</th><th>Meaning</th></tr></thead><tbody><tr><td>Geometry</td><td>The geometry the code runs on and writes to (input 0).</td></tr><tr><td>Selection</td><td>Elements to run on (a boolean field). Others are left unchanged.</td></tr><tr><td>Input 1</td><td>Another geometry the code can read: <code>point_attr(1, ...)</code>, <code>ray_cast(1, ...)</code>. Its points are those of its mesh, else its point cloud, curves or instances.</td></tr><tr><td>*params*</td><td>One socket per <code>param()</code> in the code.</td></tr></tbody></table></div>
+<p><strong>Run Over</strong> sets what the code runs once for:</p>
+<div class="table"><table><thead><tr><th>Run Over</th><th>Runs once per</th><th><code>@</code> attributes live on</th></tr></thead><tbody><tr><td>Points</td><td>point of the mesh, point cloud and curves</td><td>points</td></tr><tr><td>Faces</td><td>face</td><td>faces (<code>@position</code> reads the face center)</td></tr><tr><td>Edges</td><td>edge</td><td>edges</td></tr><tr><td>Face Corners</td><td>face corner</td><td>corners</td></tr><tr><td>Curves</td><td>curve</td><td>curves (<code>@position</code> reads the average of its points)</td></tr><tr><td>Instances</td><td>instance of the top-level geometry</td><td>instances (<code>@position</code>, <code>@transform</code>)</td></tr><tr><td>Geometry</td><td>once for the whole geometry</td><td>(none)</td></tr></tbody></table></div>
+<p>With Points, the code runs separately on each part that has points: the mesh, the point cloud and the curves. Input 0 is then the part being run on: <code>point_count(0)</code> and <code>nearby_points(0, ...)</code> see only its points.</p>
+<p>Every element runs independently and in parallel. Writing <code>@name</code> changes the current element only; to change other elements, use <code>set_point_attr()</code> and the topology functions below, which are applied after the run in element order. The result never depends on the number of threads.</p>
+<h2 id="language"><a class="anchor" href="#language">Language</a></h2>
+<p>Toast is a statically typed subset of Python.</p>
+<ul><li><strong>Types:</strong> <code>float</code>, <code>int</code>, <code>bool</code>, <code>vec2</code>, <code>vec3</code>, <code>vec4</code>, <code>quat</code> (a rotation), <code>mat4</code> (a transform) and lists. A variable's type is fixed by its first assignment; annotate to choose one: <code>x: float = 1</code>. Tuples of 2 to 4 numbers are vectors: <code>(0, 0, 1)</code>.</li><li><strong>Vectors:</strong> <code>v.x</code>, <code>v.xy</code>, <code>v.zyx</code>, <code>v[0]</code>; <code>v.x = 1</code> sets one component. <code>+ - * /</code> work between vectors of the same size and between a vector and a number.</li><li><strong>Control flow:</strong> <code>if/elif/else</code>, <code>while</code>, <code>for i in range(...)</code>, <code>break</code>, <code>continue</code>, <code>x if cond else y</code>, <code>and/or/not</code>, comparison chains like <code>0 &lt; x &lt; 1</code>. <code>return</code> at the top level ends the current element.</li><li><strong>Numbers:</strong> <code>%</code>, <code>//</code> and <code>/</code> follow Python (<code>7 / 2</code> is <code>3.5</code>). Integer division by zero gives 0 instead of crashing Blender.</li><li><strong>Not supported:</strong> classes, dicts, growing lists, strings (except as names), recursion, <code>*args</code>, imports other than <code>math</code> and Toast libraries.</li></ul>
+<h3 id="lists"><a class="anchor" href="#lists">Lists</a></h3>
+<p>Lists have a fixed size, known when the code compiles (at most 4096 values):</p>
+<figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code>d = [<span class="number">0.0</span>] * <span class="number">8</span>                 <span class="comment"># 8 floats, all 0</span>
+weights = [<span class="number">0.25</span>, <span class="number">0.5</span>, <span class="number">0.25</span>]   <span class="comment"># 3 floats</span>
+corners: <span class="type">list</span>[<span class="type">vec3</span>] = [(<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>), (<span class="number">1</span>, <span class="number">0</span>, <span class="number">0</span>), (<span class="number">1</span>, <span class="number">1</span>, <span class="number">0</span>)]
+d[<span class="number">0</span>] = <span class="number">1.5</span>
+d[-<span class="number">1</span>] += <span class="number">2</span>                    <span class="comment"># -1 is the last value, as in Python</span>
+total = <span class="number">0.0</span>
+<span class="kw">for</span> w <span class="kw">in</span> weights:
+    total += w
+<span class="attr">@n</span>: <span class="type">int</span> = <span class="fn">len</span>(d)</code></pre></figure>
+<p>Reading outside the list gives 0 and writing outside it does nothing, so a wrong index never crashes Blender. Lists are values, like vectors: <code>b = a</code> and passing <code>a</code> to a helper make a copy (unlike Python), so return a changed list from a helper. A list can't be stored in an attribute, and there is no <code>append()</code>. Where a vector is expected, a list of numbers is a vector: <code>@position = [0, 0, 1]</code>.</p>
+<h3 id="rotations-and-transforms"><a class="anchor" href="#rotations-and-transforms">Rotations and transforms</a></h3>
+<p><code>quat</code> is a rotation and <code>mat4</code> a 4x4 transform, the same as Blender's Rotation and Matrix sockets and attributes.</p>
+<figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code>q = <span class="fn">quat_axis_angle</span>((<span class="number">0</span>, <span class="number">0</span>, <span class="number">1</span>), <span class="type">math</span>.pi / <span class="number">2</span>)
+v = <span class="fn">rotate</span>(q, (<span class="number">1</span>, <span class="number">0</span>, <span class="number">0</span>))                      <span class="comment"># (0, 1, 0)</span>
+m = <span class="fn">mat4_compose</span>((<span class="number">1</span>, <span class="number">2</span>, <span class="number">3</span>), q, <span class="number">2.0</span>)           <span class="comment"># location, rotation, scale</span>
+p = <span class="fn">transform_point</span>(m, (<span class="number">1</span>, <span class="number">0</span>, <span class="number">0</span>))             <span class="comment"># (1, 4, 3)</span>
+back = <span class="fn">transform_point</span>(<span class="fn">inverse</span>(m), p)
+<span class="attr">@spin</span>: <span class="type">quat</span> = q * <span class="fn">quat_euler</span>((<span class="number">0.1</span>, <span class="number">0</span>, <span class="number">0</span>))     <span class="comment"># combine rotations with *</span>
+<span class="attr">@xform</span>: <span class="type">mat4</span> = m * <span class="fn">mat4_translation</span>((<span class="number">0</span>, <span class="number">0</span>, <span class="number">1</span>))
+location = m.translation                      <span class="comment"># also m.rotation, m.scale</span></code></pre></figure>
+<div class="table"><table><thead><tr><th>Function</th><th>Returns</th></tr></thead><tbody><tr><td><code>quat()</code>, <code>quat(w, x, y, z)</code></td><td>No rotation, or a quaternion from components (<code>.w .x .y .z</code> read them).</td></tr><tr><td><code>quat_axis_angle(axis, angle)</code>, <code>quat_euler(xyz)</code>, <code>quat_between(a, b)</code></td><td>A rotation around an axis, from XYZ Euler angles (radians), or the smallest rotation turning direction <code>a</code> into <code>b</code>.</td></tr><tr><td><code>rotate(q, v)</code>, <code>slerp(a, b, t)</code>, <code>to_euler(q)</code>, <code>normalize(q)</code></td><td>Rotate a vector; blend rotations; Euler angles of a rotation.</td></tr><tr><td><code>mat4()</code>, <code>mat4_translation(v)</code>, <code>mat4_rotation(q)</code>, <code>mat4_scale(s)</code>, <code>mat4_compose(location, rotation, scale)</code></td><td>Transforms (<code>s</code> is a number or vec3).</td></tr><tr><td><code>transform_point(m, p)</code>, <code>transform_direction(m, d)</code></td><td>Transform a point, or a direction (ignoring the location).</td></tr><tr><td><code>inverse(q or m)</code>, <code>transpose(m)</code></td><td>A transform that can't be inverted gives a zero matrix.</td></tr><tr><td><code>m.translation</code>, <code>m.rotation</code>, <code>m.scale</code></td><td>The parts of a transform (read-only).</td></tr></tbody></table></div>
+<p><code>*</code> combines two rotations or two transforms; to apply them to a vector, use <code>rotate()</code> or <code>transform_point()</code>.</p>
+<h3 id="attributes"><a class="anchor" href="#attributes">Attributes</a></h3>
+<p><code>@name</code> is an attribute of the current element. Toast uses Blender's attribute names:</p>
+<div class="table"><table><thead><tr><th>Attribute</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td><code>@position</code></td><td>vec3</td><td>Point positions. In Faces/Edges/Corners mode, reading interpolates.</td></tr><tr><td><code>@normal</code></td><td>vec3</td><td>Vertex, face or corner normals (or an attribute named <code>normal</code>).</td></tr><tr><td><code>@color</code></td><td>vec3</td><td>The mesh's active color attribute, created as "Color" if missing.</td></tr><tr><td><code>@velocity</code></td><td>vec3</td><td></td></tr><tr><td><code>@radius</code></td><td>float</td><td></td></tr><tr><td><code>@id</code></td><td>int</td><td></td></tr><tr><td><code>@transform</code></td><td>mat4</td><td>With Run Over Instances: the instance's transform.</td></tr><tr><td><code>@index</code></td><td>int</td><td>Index of the current element (read-only).</td></tr><tr><td><code>@count</code></td><td>int</td><td>Number of elements in the Run Over domain (read-only).</td></tr><tr><td><code>@frame</code>, <code>@time</code></td><td>float</td><td>Scene frame and time in seconds (read-only).</td></tr></tbody></table></div>
+<p>Any other name is your own attribute. Its type comes from an annotation, or from its first assigned value, or is <code>float</code>:</p>
+<figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code><span class="attr">@height</span>: <span class="type">float</span> = <span class="number">0.5</span>          <span class="comment"># declared and written</span>
+<span class="attr">@flag</span>: <span class="type">bool</span>                   <span class="comment"># declared only</span>
+<span class="attr">@offset</span> = (<span class="number">0</span>, <span class="number">0</span>, <span class="number">1</span>)           <span class="comment"># a vec3, from the value</span>
+<span class="attr">@flag</span> = <span class="attr">@height</span> &gt; <span class="number">0.3</span></code></pre></figure>
+<p>Writing an attribute that doesn't exist creates it on the Run Over domain.</p>
+<p>With Run Over Instances, <code>@position</code> is the location of the instance's transform: writing it moves the instance. When the code writes both <code>@transform</code> and <code>@position</code>, the location comes from <code>@position</code>.</p>
+<h3 id="parameters"><a class="anchor" href="#parameters">Parameters</a></h3>
+<p><code>param(name, default, min=, max=)</code> adds a socket to the node; its type comes from the default. The same name always refers to the same socket.</p>
+<figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code>amount = <span class="fn">param</span>(<span class="string">"amount"</span>, <span class="number">0.5</span>, <span class="fn">min</span>=<span class="number">0</span>, <span class="fn">max</span>=<span class="number">1</span>)
+count = <span class="fn">param</span>(<span class="string">"count"</span>, <span class="number">3</span>)
+flip = <span class="fn">param</span>(<span class="string">"flip"</span>, <span class="kw">False</span>)
+offset = <span class="fn">param</span>(<span class="string">"offset"</span>, (<span class="number">0.0</span>, <span class="number">0.0</span>, <span class="number">1.0</span>))
+<span class="attr">@position</span> += offset * amount * count
+<span class="kw">if</span> flip:
+    <span class="attr">@position</span>.z = -<span class="attr">@position</span>.z</code></pre></figure>
+<h3 id="helpers-and-libraries"><a class="anchor" href="#helpers-and-libraries">Helpers and libraries</a></h3>
+<p><code>def</code> helpers are compiled once for each combination of argument types they are called with:</p>
+<figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code><span class="kw">def</span> bump(p: <span class="type">vec3</span>, amount):
+    <span class="kw">return</span> p + (<span class="number">0</span>, <span class="number">0</span>, amount)
+
+<span class="kw">def</span> sq(x):
+    <span class="kw">return</span> x * x
+
+<span class="attr">@position</span> = bump(<span class="attr">@position</span>, sq(<span class="attr">@index</span> * <span class="number">0.01</span>))</code></pre></figure>
+<p>Inside a helper, <code>param()</code>, math, noise, <code>nearby_points()</code> and the writing functions work; <code>@</code> attributes and <code>point_attr()</code> don't (pass the values as arguments).</p>
+<p>Put shared helpers in a <strong>library</strong>: a Text named <code>toast_lib.&lt;name&gt;</code> (or a file <code>&lt;name&gt;.py</code> in <code>~/.config/toast/lib</code> or <code>$TOAST_LIB_PATH</code>) containing only <code>def</code>s and imports.</p>
+<figure class="code"><figcaption><span>Toast library</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code><span class="comment"># Text "toast_lib.shapes"</span>
+<span class="kw">def</span> sphere(p: <span class="type">vec3</span>, radius):
+    <span class="kw">return</span> <span class="fn">length</span>(p) - radius</code></pre></figure>
+<figure class="code"><figcaption><span>Python</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code><span class="comment"># Node code</span>
+<span class="kw">from</span> toast_lib.shapes <span class="kw">import</span> sphere
+<span class="attr">@inside</span> = sphere(<span class="attr">@position</span>, <span class="number">1.0</span>) &lt; <span class="number">0</span></code></pre></figure>
+<p>Editing a library recompiles every node that uses it.</p>
+<h2 id="builtins"><a class="anchor" href="#builtins">Builtins</a></h2>
+<h3 id="math"><a class="anchor" href="#math">Math</a></h3>
+<div class="table"><table><thead><tr><th>Function</th><th>Notes</th></tr></thead><tbody><tr><td><code>sin cos tan asin acos atan sinh cosh tanh exp log log2 log10 sqrt</code></td><td>Numbers and vectors (per component).</td></tr><tr><td><code>len(list)</code></td><td>The size of a list (or a vector).</td></tr><tr><td><code>floor ceil trunc abs frac sign radians degrees</code></td><td>Same. <code>math.floor/ceil/trunc</code> return int, as in Python.</td></tr><tr><td><code>pow(x, y)</code>, <code>atan2(y, x)</code>, <code>fmod(x, y)</code>, <code>min</code>, <code>max</code></td><td></td></tr><tr><td><code>clamp(x, lo, hi)</code></td><td></td></tr><tr><td><code>lerp(a, b, t)</code></td><td><code>a + (b - a) * t</code></td></tr><tr><td><code>map_range(x, from_min, from_max, to_min, to_max)</code></td><td>Like Blender's Map Range (linear, clamped).</td></tr><tr><td><code>smoothstep(edge0, edge1, x)</code></td><td></td></tr><tr><td><code>dot(a, b)</code>, <code>cross(a, b)</code>, <code>length(v)</code>, <code>distance(a, b)</code>, <code>normalize(v)</code></td><td><code>normalize</code> keeps zero vectors at zero.</td></tr><tr><td><code>vec2(...)</code>, <code>vec3(...)</code>, <code>vec4(...)</code>, <code>int(x)</code>, <code>float(x)</code>, <code>bool(x)</code></td><td></td></tr><tr><td><code>math.pi</code>, <code>math.tau</code>, <code>math.e</code></td><td></td></tr></tbody></table></div>
+<h3 id="noise-and-random"><a class="anchor" href="#noise-and-random">Noise and random</a></h3>
+<p>These match Blender's nodes exactly (bit for bit). Put the scale in the position.</p>
+<div class="table"><table><thead><tr><th>Function</th><th>Equals</th></tr></thead><tbody><tr><td><code>noise(p)</code></td><td>Noise Texture factor (scale 1, detail 0), in 0..1. <code>p</code> is a float or vec2/3/4.</td></tr><tr><td><code>signed_noise(p)</code></td><td>The same noise in -1..1.</td></tr><tr><td><code>fbm(p, detail=2, roughness=0.5, lacunarity=2)</code></td><td>Noise Texture (fBM, normalized).</td></tr><tr><td><code>voronoi(p, randomness=1)</code></td><td>Voronoi Texture (3D, F1, Euclidean). Returns a cell with <code>.distance</code>, <code>.color</code>, <code>.position</code>.</td></tr><tr><td><code>random(id, seed)</code></td><td>Random Value node (Float, 0..1).</td></tr><tr><td><code>hash01(x)</code></td><td>A hash of <code>x</code> in 0..1 (int, float or vector).</td></tr><tr><td><code>curl_noise(p)</code></td><td>A swirling vec3 field (the curl of three noises): moving points along it looks like smoke or water. Toast's own, there is no Blender node for it.</td></tr></tbody></table></div>
+<h3 id="reading-geometry"><a class="anchor" href="#reading-geometry">Reading geometry</a></h3>
+<p><code>input</code> is a constant: 0 for the node's Geometry, 1 for Input 1.</p>
+<div class="table"><table><thead><tr><th>Function</th><th>Returns</th></tr></thead><tbody><tr><td><code>point_attr(input, "name", index)</code></td><td>An attribute of a point. Annotate for its type: <code>v: vec3 = point_attr(1, "velocity", j)</code>.</td></tr><tr><td><code>face_attr(input, "name", index)</code></td><td>An attribute of a face.</td></tr><tr><td><code>curve_attr(input, "name", index)</code>, <code>instance_attr(input, "name", index)</code></td><td>An attribute of a curve or an instance.</td></tr><tr><td><code>point_count(input)</code>, <code>face_count(input)</code>, <code>curve_count(input)</code></td><td>Element counts.</td></tr><tr><td><code>nearest_point(input, position, radius)</code></td><td>The closest point within <code>radius</code>, or -1.</td></tr><tr><td><code>corner_point(input, corner)</code>, <code>corner_face(input, corner)</code></td><td>The point and face of a face corner, or -1.</td></tr><tr><td><code>ray_cast(input, origin, direction, max_distance)</code></td><td>A hit: <code>.hit</code>, <code>.position</code>, <code>.normal</code>, <code>.distance</code>, <code>.face</code> (-1 without a hit).</td></tr><tr><td><code>closest_point(input, position)</code></td><td>The closest point on the surface, as a hit.</td></tr><tr><td><code>sample_nearest_surface(input, "name", position)</code></td><td>A point attribute interpolated at the closest surface point.</td></tr></tbody></table></div>
+<p>Loops over related elements take a constant maximum count:</p>
+<div class="table"><table><thead><tr><th>Loop</th><th>Visits</th></tr></thead><tbody><tr><td><code>for j in nearby_points(input, position, radius, max_count):</code></td><td>Points within <code>radius</code>, closest first.</td></tr><tr><td><code>for p in face_points(input, face, max_count):</code></td><td>The points of a face, in order.</td></tr><tr><td><code>for p in curve_points(input, curve, max_count):</code></td><td>The points of a curve, from root to tip.</td></tr><tr><td><code>for f in point_faces(input, point, max_count):</code></td><td>The faces using a point.</td></tr><tr><td><code>for q in point_neighbors(input, point, max_count):</code></td><td>Points sharing an edge with a point.</td></tr></tbody></table></div>
+<p>Reading input 0 with these functions sees the geometry as it was before the run, even for attributes the code is writing.</p>
+<h3 id="changing-geometry"><a class="anchor" href="#changing-geometry">Changing geometry</a></h3>
+<div class="table"><table><thead><tr><th>Function</th><th>Does</th></tr></thead><tbody><tr><td><code>add_point(position)</code></td><td>Adds a point and returns it, for <code>add_edge</code>/<code>add_face</code> in the same run.</td></tr><tr><td><code>add_edge(a, b)</code></td><td>Adds an edge.</td></tr><tr><td><code>add_face((a, b, c, ...))</code></td><td>Adds a face through 3 or more points.</td></tr><tr><td><code>remove_point(p)</code></td><td>Removes a point and the edges and faces using it.</td></tr><tr><td><code>remove_face(f)</code></td><td>Removes a face and keeps its points (like Delete Geometry, Only Faces).</td></tr><tr><td><code>remove_curve(c)</code></td><td>Removes a curve and its points.</td></tr><tr><td><code>remove_instance(i)</code></td><td>Removes an instance (Run Over Instances).</td></tr><tr><td><code>set_point_attr(index, "name", value)</code>, <code>set_face_attr(...)</code></td><td>Writes another element's attribute.</td></tr></tbody></table></div>
+<p>These are applied after the run in element order: new elements are numbered by the element that created them, and when several elements write the same attribute, the highest index wins. On curves, points and curves can be removed but not added; removing the last point of a curve removes the curve.</p>
+<h2 id="cookbook"><a class="anchor" href="#cookbook">Cookbook</a></h2>
+<h3 id="thin-out-points-at-random"><a class="anchor" href="#thin-out-points-at-random">Thin out points at random</a></h3>
+<figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code>keep = <span class="fn">param</span>(<span class="string">"keep"</span>, <span class="number">0.5</span>, <span class="fn">min</span>=<span class="number">0</span>, <span class="fn">max</span>=<span class="number">1</span>)
+<span class="kw">if</span> <span class="fn">random</span>(<span class="attr">@index</span>, <span class="fn">param</span>(<span class="string">"seed"</span>, <span class="number">0</span>)) &gt; keep:
+    <span class="fn">remove_point</span>(<span class="attr">@index</span>)</code></pre></figure>
+<h3 id="smooth-a-mesh"><a class="anchor" href="#smooth-a-mesh">Smooth a mesh</a></h3>
+<p>Each point moves toward the average of its neighbors (run it a few times for more).</p>
+<figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code>total = <span class="type">vec3</span>(<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>)
+count = <span class="number">0</span>
+<span class="kw">for</span> q <span class="kw">in</span> <span class="fn">point_neighbors</span>(<span class="number">0</span>, <span class="attr">@index</span>, <span class="number">32</span>):
+    total += <span class="fn">point_attr</span>(<span class="number">0</span>, <span class="string">"position"</span>, q)
+    count += <span class="number">1</span>
+<span class="kw">if</span> count &gt; <span class="number">0</span>:
+    <span class="attr">@position</span> = <span class="fn">lerp</span>(<span class="attr">@position</span>, total / count, <span class="fn">param</span>(<span class="string">"strength"</span>, <span class="number">0.5</span>))</code></pre></figure>
+<h3 id="drop-points-onto-a-surface"><a class="anchor" href="#drop-points-onto-a-surface">Drop points onto a surface</a></h3>
+<p>Connect the ground mesh to Input 1.</p>
+<figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code>hit = <span class="fn">ray_cast</span>(<span class="number">1</span>, <span class="attr">@position</span>, (<span class="number">0</span>, <span class="number">0</span>, -<span class="number">1</span>), <span class="number">1000.0</span>)
+<span class="kw">if</span> hit.hit:
+    <span class="attr">@position</span> = hit.position
+    <span class="attr">@normal_up</span>: <span class="type">vec3</span> = hit.normal</code></pre></figure>
+<h3 id="shrink-wrap-to-the-closest-surface"><a class="anchor" href="#shrink-wrap-to-the-closest-surface">Shrink-wrap to the closest surface</a></h3>
+<figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code>target = <span class="fn">closest_point</span>(<span class="number">1</span>, <span class="attr">@position</span>)
+<span class="attr">@position</span> = <span class="fn">lerp</span>(<span class="attr">@position</span>, target.position, <span class="fn">param</span>(<span class="string">"factor"</span>, <span class="number">1.0</span>))</code></pre></figure>
+<h3 id="transfer-a-color-from-another-mesh"><a class="anchor" href="#transfer-a-color-from-another-mesh">Transfer a color from another mesh</a></h3>
+<figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code><span class="attr">@color</span> = <span class="fn">sample_nearest_surface</span>(<span class="number">1</span>, <span class="string">"Color"</span>, <span class="attr">@position</span>)</code></pre></figure>
+<h3 id="color-by-voronoi-cell"><a class="anchor" href="#color-by-voronoi-cell">Color by Voronoi cell</a></h3>
+<figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code>cell = <span class="fn">voronoi</span>(<span class="attr">@position</span> * <span class="fn">param</span>(<span class="string">"scale"</span>, <span class="number">4.0</span>))
+<span class="attr">@color</span> = cell.color
+<span class="attr">@edge_distance</span>: <span class="type">float</span> = cell.<span class="fn">distance</span></code></pre></figure>
+<h3 id="grow-hairs-along-the-normal"><a class="anchor" href="#grow-hairs-along-the-normal">Grow hairs along the normal</a></h3>
+<figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code>length_ = <span class="fn">param</span>(<span class="string">"length"</span>, <span class="number">0.2</span>)
+tip = <span class="fn">add_point</span>(<span class="attr">@position</span> + <span class="attr">@normal</span> * length_ * (<span class="number">0.5</span> + <span class="fn">random</span>(<span class="attr">@index</span>, <span class="number">3</span>)))
+<span class="fn">add_edge</span>(<span class="attr">@index</span>, tip)</code></pre></figure>
+<h3 id="delete-faces-that-point-down-run-over-faces"><a class="anchor" href="#delete-faces-that-point-down-run-over-faces">Delete faces that point down (Run Over: Faces)</a></h3>
+<figure class="code"><figcaption><span>Toast · Run Over Faces</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code><span class="kw">if</span> <span class="attr">@normal</span>.z &lt; <span class="fn">param</span>(<span class="string">"threshold"</span>, -<span class="number">0.5</span>):
+    <span class="fn">remove_face</span>(<span class="attr">@index</span>)</code></pre></figure>
+<h3 id="build-a-grid-from-scratch-run-over-geometry"><a class="anchor" href="#build-a-grid-from-scratch-run-over-geometry">Build a grid from scratch (Run Over: Geometry)</a></h3>
+<figure class="code"><figcaption><span>Toast · Run Over Geometry</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code>size = <span class="fn">param</span>(<span class="string">"size"</span>, <span class="number">5</span>)
+base = <span class="fn">point_count</span>(<span class="number">0</span>)
+<span class="kw">for</span> y <span class="kw">in</span> <span class="fn">range</span>(size):
+    <span class="kw">for</span> x <span class="kw">in</span> <span class="fn">range</span>(size):
+        <span class="fn">add_point</span>((x * <span class="number">0.1</span>, y * <span class="number">0.1</span>, <span class="number">0</span>))
+<span class="kw">for</span> y <span class="kw">in</span> <span class="fn">range</span>(size - <span class="number">1</span>):
+    <span class="kw">for</span> x <span class="kw">in</span> <span class="fn">range</span>(size - <span class="number">1</span>):
+        a = base + y * size + x
+        <span class="fn">add_face</span>((a, a + <span class="number">1</span>, a + size + <span class="number">1</span>, a + size))</code></pre></figure>
+<p>Point numbers from <code>point_count(0)</code> on are the points added in this run, in the order they are added (element by element, then in the order each element adds them). That is how the result numbers them, so with Run Over Geometry you can compute them, as here.</p>
+<h3 id="swirl-points-with-curl-noise"><a class="anchor" href="#swirl-points-with-curl-noise">Swirl points with curl noise</a></h3>
+<figure class="code"><figcaption><span>Toast · Run Over Points</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code><span class="attr">@position</span> += <span class="fn">curl_noise</span>(<span class="attr">@position</span> * <span class="fn">param</span>(<span class="string">"freq"</span>, <span class="number">1.5</span>) + (<span class="number">0</span>, <span class="number">0</span>, <span class="attr">@time</span> * <span class="number">0.2</span>)) * <span class="number">0.1</span></code></pre></figure>
+<h3 id="randomize-instances-run-over-instances"><a class="anchor" href="#randomize-instances-run-over-instances">Randomize instances (Run Over: Instances)</a></h3>
+<figure class="code"><figcaption><span>Toast · Run Over Instances</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code>angle = <span class="fn">random</span>(<span class="attr">@index</span>, <span class="number">0</span>) * <span class="type">math</span>.tau
+s = <span class="fn">map_range</span>(<span class="fn">random</span>(<span class="attr">@index</span>, <span class="number">1</span>), <span class="number">0</span>, <span class="number">1</span>, <span class="number">0.5</span>, <span class="number">1.5</span>)
+<span class="attr">@transform</span> = <span class="attr">@transform</span> * <span class="fn">mat4_compose</span>((<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>), <span class="fn">quat_axis_angle</span>((<span class="number">0</span>, <span class="number">0</span>, <span class="number">1</span>), angle), s)</code></pre></figure>
+<h3 id="keep-half-of-the-curves-run-over-curves"><a class="anchor" href="#keep-half-of-the-curves-run-over-curves">Keep half of the curves (Run Over: Curves)</a></h3>
+<figure class="code"><figcaption><span>Toast · Run Over Curves</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code><span class="kw">if</span> <span class="fn">random</span>(<span class="attr">@index</span>, <span class="fn">param</span>(<span class="string">"seed"</span>, <span class="number">0</span>)) &gt; <span class="number">0.5</span>:
+    <span class="fn">remove_curve</span>(<span class="attr">@index</span>)</code></pre></figure>
+<h3 id="mark-where-faces-touch-each-point-run-over-faces"><a class="anchor" href="#mark-where-faces-touch-each-point-run-over-faces">Mark where faces touch each point (Run Over: Faces)</a></h3>
+<figure class="code"><figcaption><span>Toast · Run Over Faces</span><button class="copy" type="button" aria-label="Copy code">Copy</button></figcaption><pre><code><span class="attr">@touched</span>: <span class="type">int</span>
+<span class="kw">for</span> p <span class="kw">in</span> <span class="fn">face_points</span>(<span class="number">0</span>, <span class="attr">@index</span>, <span class="number">16</span>):
+    <span class="fn">set_point_attr</span>(p, <span class="string">"touched"</span>, <span class="attr">@index</span>)</code></pre></figure>
+<h2 id="errors"><a class="anchor" href="#errors">Errors</a></h2>
+<p>Errors name the line, and spellings from earlier Toast versions tell you the new name:</p>
+<div class="table"><table><thead><tr><th>You wrote</th><th>Toast says</th></tr></thead><tbody><tr><td><code>x = 1</code> then <code>x = 1.5</code></td><td><code>can't assign a float to 'x', which is a int (its type was fixed on line 1)</code></td></tr><tr><td><code>@P</code></td><td><code>@P is now @position (Toast uses Blender's attribute names)</code></td></tr><tr><td><code>ch("amp", 1)</code></td><td><code>ch() is now param()</code></td></tr><tr><td><code>f@height = 1</code></td><td><code>type prefixes are not used in Toast, annotate the type instead</code></td></tr></tbody></table></div>
+<h2 id="limits"><a class="anchor" href="#limits">Limits</a></h2>
+<ul><li>Meshes, point clouds, curves and instances. Volumes and Grease Pencil are not supported.</li><li>Run Over Instances changes the instances of the top-level geometry only, like Blender's instance nodes; geometry inside instances runs with the other modes.</li><li>Linux and macOS (the node loads compiled code with <code>dlopen</code>).</li><li>No compiler needs to be installed on Linux: the fork has a built-in one. Elsewhere, or with the add-on's Compiler preference set to External, Toast uses g++ or clang++ (<code>TOAST_CXX</code> picks one).</li></ul>
+<footer>Toast 0.10.0 · GPL-2.0-or-later · generated from <code>docs/guide.md</code></footer>
+</main>
+</div>
+<script>
+(function () {
+  var root = document.documentElement;
+  function setTheme(t) {
+    if (t === "auto") { root.removeAttribute("data-theme"); } else { root.setAttribute("data-theme", t); }
+    document.querySelectorAll(".theme button").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.theme === t));
+    });
+    try { localStorage.setItem("toast-guide-theme", t); } catch (e) {}
+  }
+  var saved = "auto";
+  try { saved = localStorage.getItem("toast-guide-theme") || "auto"; } catch (e) {}
+  setTheme(saved);
+  document.querySelectorAll(".theme button").forEach(function (b) {
+    b.addEventListener("click", function () { setTheme(b.dataset.theme); });
+  });
+
+  document.querySelectorAll(".copy").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var text = btn.closest("figure").querySelector("pre").innerText;
+      function done() { btn.textContent = "Copied"; setTimeout(function () { btn.textContent = "Copy"; }, 1400); }
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(done, function () {});
+      } else {
+        var ta = document.createElement("textarea");
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); done(); } catch (e) {}
+        ta.remove();
+      }
+    });
+  });
+
+  var menu = document.querySelector(".menu");
+  menu.addEventListener("click", function () { document.body.classList.toggle("nav-open"); });
+  document.querySelectorAll(".toc a").forEach(function (a) {
+    a.addEventListener("click", function () { document.body.classList.remove("nav-open"); });
+  });
+
+  var links = {};
+  document.querySelectorAll(".toc a").forEach(function (a) { links[a.getAttribute("href").slice(1)] = a; });
+  var headings = Array.prototype.slice.call(document.querySelectorAll("main h2[id], main h3[id]"));
+  function spy() {
+    var current = null;
+    for (var k = 0; k < headings.length; k++) {
+      if (headings[k].getBoundingClientRect().top < 120) { current = headings[k]; } else { break; }
+    }
+    document.querySelectorAll(".toc a.active").forEach(function (a) { a.classList.remove("active"); });
+    if (current && links[current.id]) {
+      links[current.id].classList.add("active");
+      var box = document.querySelector(".sidebar");
+      var r = links[current.id].getBoundingClientRect();
+      if (r.top < 80 || r.bottom > window.innerHeight - 40) { links[current.id].scrollIntoView({block: "nearest"}); }
+    }
+  }
+  document.addEventListener("scroll", spy, {passive: true});
+  spy();
+})();
+</script>
+</body>
+</html>
