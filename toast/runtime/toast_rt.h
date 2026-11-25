@@ -15,11 +15,21 @@
 
 #pragma once
 
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <cstring>
-#include <initializer_list>
+/* No system headers: kernels also compile in Blender's built-in compiler, on machines without a
+ * C++ toolchain. Types come from the compiler's predefined macros, math from its builtins (which
+ * become the same instructions or libm calls as <cmath>, so results don't change). */
+typedef __INT8_TYPE__ int8_t;
+typedef __INT16_TYPE__ int16_t;
+typedef __INT32_TYPE__ int32_t;
+typedef __INT64_TYPE__ int64_t;
+typedef __UINT8_TYPE__ uint8_t;
+typedef __UINT16_TYPE__ uint16_t;
+typedef __UINT32_TYPE__ uint32_t;
+typedef __UINT64_TYPE__ uint64_t;
+typedef __SIZE_TYPE__ size_t;
+#ifndef offsetof
+#  define offsetof(type, member) __builtin_offsetof(type, member)
+#endif
 
 #define TOAST_ABI_VERSION 4
 
@@ -281,7 +291,7 @@ inline int32_t pymod(int32_t a, int32_t b)
 
 inline float pymod(float a, float b)
 {
-  float r = std::fmod(a, b);
+  float r = __builtin_fmodf(a, b);
   if (r != 0.0f && ((r < 0.0f) != (b < 0.0f))) {
     r += b;
   }
@@ -305,7 +315,7 @@ inline int32_t floordiv(int32_t a, int32_t b)
 
 inline float floordiv(float a, float b)
 {
-  return std::floor(a / b);
+  return __builtin_floorf(a / b);
 }
 
 inline int32_t ipow(int32_t base, int32_t exp)
@@ -356,25 +366,25 @@ inline int32_t to_int(float v)
     return v; \
   }
 
-TOAST_UNARY(sin, std::sin(x))
-TOAST_UNARY(cos, std::cos(x))
-TOAST_UNARY(tan, std::tan(x))
-TOAST_UNARY(asin, std::asin(x))
-TOAST_UNARY(acos, std::acos(x))
-TOAST_UNARY(atan, std::atan(x))
-TOAST_UNARY(sinh, std::sinh(x))
-TOAST_UNARY(cosh, std::cosh(x))
-TOAST_UNARY(tanh, std::tanh(x))
-TOAST_UNARY(exp, std::exp(x))
-TOAST_UNARY(log, std::log(x))
-TOAST_UNARY(log2, std::log2(x))
-TOAST_UNARY(log10, std::log10(x))
-TOAST_UNARY(sqrt, std::sqrt(x))
-TOAST_UNARY(floor, std::floor(x))
-TOAST_UNARY(ceil, std::ceil(x))
-TOAST_UNARY(trunc, std::trunc(x))
-TOAST_UNARY(abs, std::fabs(x))
-TOAST_UNARY(frac, x - std::floor(x))
+TOAST_UNARY(sin, __builtin_sinf(x))
+TOAST_UNARY(cos, __builtin_cosf(x))
+TOAST_UNARY(tan, __builtin_tanf(x))
+TOAST_UNARY(asin, __builtin_asinf(x))
+TOAST_UNARY(acos, __builtin_acosf(x))
+TOAST_UNARY(atan, __builtin_atanf(x))
+TOAST_UNARY(sinh, __builtin_sinhf(x))
+TOAST_UNARY(cosh, __builtin_coshf(x))
+TOAST_UNARY(tanh, __builtin_tanhf(x))
+TOAST_UNARY(exp, __builtin_expf(x))
+TOAST_UNARY(log, __builtin_logf(x))
+TOAST_UNARY(log2, __builtin_log2f(x))
+TOAST_UNARY(log10, __builtin_log10f(x))
+TOAST_UNARY(sqrt, __builtin_sqrtf(x))
+TOAST_UNARY(floor, __builtin_floorf(x))
+TOAST_UNARY(ceil, __builtin_ceilf(x))
+TOAST_UNARY(trunc, __builtin_truncf(x))
+TOAST_UNARY(abs, __builtin_fabsf(x))
+TOAST_UNARY(frac, x - __builtin_floorf(x))
 TOAST_UNARY(sign, float((x > 0.0f) - (x < 0.0f)))
 TOAST_UNARY(radians, x * 0.017453292519943295f)
 TOAST_UNARY(degrees, x * 57.29577951308232f)
@@ -406,9 +416,9 @@ inline int32_t abs(int32_t x)
     return a; \
   }
 
-TOAST_BINARY(pow, std::pow(a, b))
-TOAST_BINARY(atan2, std::atan2(a, b))
-TOAST_BINARY(fmod, std::fmod(a, b))
+TOAST_BINARY(pow, __builtin_powf(a, b))
+TOAST_BINARY(atan2, __builtin_atan2f(a, b))
+TOAST_BINARY(fmod, __builtin_fmodf(a, b))
 TOAST_BINARY(min, a < b ? a : b)
 TOAST_BINARY(max, a > b ? a : b)
 
@@ -512,7 +522,7 @@ inline float3 cross(const float3 &a, const float3 &b)
 }
 template<typename V, int N = vec_size<V>::value> inline float length(const V &v)
 {
-  return std::sqrt(dot(v, v));
+  return __builtin_sqrtf(dot(v, v));
 }
 template<typename V, int N = vec_size<V>::value> inline float distance(const V &a, const V &b)
 {
@@ -553,9 +563,10 @@ inline int64_t add_point(const ToastCtx *c, int64_t src, float3 pos)
 {
   return c->host->cmd_add_point(c->host->self, c->cmd, src, &pos.x);
 }
-inline void add_prim(const ToastCtx *c, int64_t src, std::initializer_list<int64_t> pts)
+template<typename... Points> inline void add_prim(const ToastCtx *c, int64_t src, Points... pts)
 {
-  c->host->cmd_add_prim(c->host->self, c->cmd, src, pts.begin(), int32_t(pts.size()));
+  const int64_t list[] = {int64_t(pts)...};
+  c->host->cmd_add_prim(c->host->self, c->cmd, src, list, int32_t(sizeof...(pts)));
 }
 inline void remove_point(const ToastCtx *c, int64_t src, int64_t pt)
 {
@@ -751,7 +762,7 @@ inline uint32_t hash(uint32_t kx, uint32_t ky, uint32_t kz, uint32_t kw)
 inline uint32_t float_as_uint(float f)
 {
   uint32_t u;
-  std::memcpy(&u, &f, sizeof(u));
+  __builtin_memcpy(&u, &f, sizeof(u));
   return u;
 }
 
@@ -913,7 +924,7 @@ inline float noise_grad(uint32_t hash, float x, float y, float z, float w)
 
 inline float floor_fraction(float x, int &i)
 {
-  float x_floor = std::floor(x);
+  float x_floor = __builtin_floorf(x);
   i = int(x_floor);
   return x - x_floor;
 }
@@ -1003,53 +1014,53 @@ inline float perlin_noise(float4 position)
 
 inline float mod_f(float a, float b)
 {
-  return std::fmod(a, b);
+  return __builtin_fmodf(a, b);
 }
 inline float2 mod_f(float2 a, float b)
 {
-  return float2(std::fmod(a.x, b), std::fmod(a.y, b));
+  return float2(__builtin_fmodf(a.x, b), __builtin_fmodf(a.y, b));
 }
 inline float3 mod_f(float3 a, float b)
 {
-  return float3(std::fmod(a.x, b), std::fmod(a.y, b), std::fmod(a.z, b));
+  return float3(__builtin_fmodf(a.x, b), __builtin_fmodf(a.y, b), __builtin_fmodf(a.z, b));
 }
 inline float4 mod_f(float4 a, float b)
 {
-  return float4(std::fmod(a.x, b), std::fmod(a.y, b), std::fmod(a.z, b), std::fmod(a.w, b));
+  return float4(__builtin_fmodf(a.x, b), __builtin_fmodf(a.y, b), __builtin_fmodf(a.z, b), __builtin_fmodf(a.w, b));
 }
 
 }  // namespace detail
 
 inline float perlin_signed(float position)
 {
-  float precision_correction = 0.5f * float(std::fabs(position) >= 1000000.0f);
+  float precision_correction = 0.5f * float(__builtin_fabsf(position) >= 1000000.0f);
   position = detail::mod_f(position, 100000.0f) + precision_correction;
   return detail::perlin_noise(position) * 0.2500f;
 }
 
 inline float perlin_signed(float2 position)
 {
-  float2 precision_correction = 0.5f * float2(float(std::fabs(position.x) >= 1000000.0f),
-                                              float(std::fabs(position.y) >= 1000000.0f));
+  float2 precision_correction = 0.5f * float2(float(__builtin_fabsf(position.x) >= 1000000.0f),
+                                              float(__builtin_fabsf(position.y) >= 1000000.0f));
   position = detail::mod_f(position, 100000.0f) + precision_correction;
   return detail::perlin_noise(position) * 0.6616f;
 }
 
 inline float perlin_signed(float3 position)
 {
-  float3 precision_correction = 0.5f * float3(float(std::fabs(position.x) >= 1000000.0f),
-                                              float(std::fabs(position.y) >= 1000000.0f),
-                                              float(std::fabs(position.z) >= 1000000.0f));
+  float3 precision_correction = 0.5f * float3(float(__builtin_fabsf(position.x) >= 1000000.0f),
+                                              float(__builtin_fabsf(position.y) >= 1000000.0f),
+                                              float(__builtin_fabsf(position.z) >= 1000000.0f));
   position = detail::mod_f(position, 100000.0f) + precision_correction;
   return detail::perlin_noise(position) * 0.9820f;
 }
 
 inline float perlin_signed(float4 position)
 {
-  float4 precision_correction = 0.5f * float4(float(std::fabs(position.x) >= 1000000.0f),
-                                              float(std::fabs(position.y) >= 1000000.0f),
-                                              float(std::fabs(position.z) >= 1000000.0f),
-                                              float(std::fabs(position.w) >= 1000000.0f));
+  float4 precision_correction = 0.5f * float4(float(__builtin_fabsf(position.x) >= 1000000.0f),
+                                              float(__builtin_fabsf(position.y) >= 1000000.0f),
+                                              float(__builtin_fabsf(position.z) >= 1000000.0f),
+                                              float(__builtin_fabsf(position.w) >= 1000000.0f));
   position = detail::mod_f(position, 100000.0f) + precision_correction;
   return detail::perlin_noise(position) * 0.8344f;
 }
@@ -1075,7 +1086,7 @@ inline float perlin_fbm(
     amp *= roughness;
     fscale *= lacunarity;
   }
-  float rmd = detail - std::floor(detail);
+  float rmd = detail - __builtin_floorf(detail);
   if (rmd != 0.0f) {
     float t = perlin_signed(fscale * p);
     float sum2 = sum + t * amp;
@@ -1145,7 +1156,7 @@ struct Voronoi {
 inline Voronoi voronoi(float3 coord, float randomness)
 {
   randomness = randomness < 0.0f ? 0.0f : (randomness > 1.0f ? 1.0f : randomness);
-  float3 cellPosition_f = float3(std::floor(coord.x), std::floor(coord.y), std::floor(coord.z));
+  float3 cellPosition_f = float3(__builtin_floorf(coord.x), __builtin_floorf(coord.y), __builtin_floorf(coord.z));
   float3 localPosition = coord - cellPosition_f;
   detail::int3v cellPosition = {
       int32_t(cellPosition_f.x), int32_t(cellPosition_f.y), int32_t(cellPosition_f.z)};
@@ -1172,7 +1183,7 @@ inline Voronoi voronoi(float3 coord, float randomness)
   }
 
   Voronoi octave;
-  octave.distance = std::sqrt(detail::length_squared(targetPosition - localPosition));
+  octave.distance = __builtin_sqrtf(detail::length_squared(targetPosition - localPosition));
   octave.color = detail::hash_int3_to_float3({cellPosition.x + targetOffset.x,
                                               cellPosition.y + targetOffset.y,
                                               cellPosition.z + targetOffset.z});

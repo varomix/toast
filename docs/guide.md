@@ -20,7 +20,8 @@ n = noise(@position * param("freq", 4.0))
 3. In a Geometry Nodes tree, add **Toast > Toast**. In the sidebar (N) > Node > Toast, press
    **New** to create a text with starter code, and **Edit Code** to show it in a Text Editor.
 
-The node recompiles a moment after you stop typing (about 0.4 s with g++). Don't press Run
+The node recompiles a moment after you stop typing: Blender's built-in compiler turns the code
+into native code in about 0.1 s, and reopening a file reuses the compiled code. Don't press Run
 Script in the Text Editor: Toast code isn't plain Python. Errors show on the node header and in
 the Toast panel, with the line number.
 
@@ -325,4 +326,6 @@ Errors name the line, and spellings from earlier Toast versions tell you the new
 - Points, faces, edges and corners of meshes; points of point clouds. Curves and instances are
   not supported yet.
 - Linux and macOS (the node loads compiled code with `dlopen`).
-- A C++ compiler (g++ or clang++) must be installed; set `TOAST_CXX` to choose one.
+- No compiler needs to be installed on Linux: the fork has a built-in one. Elsewhere, or with
+  the add-on's Compiler preference set to External, Toast uses g++ or clang++ (`TOAST_CXX` picks
+  one).

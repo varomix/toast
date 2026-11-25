@@ -782,18 +782,21 @@ class TestBlenderNode(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cases = Path(d) / "cases.json"
             cases.write_text(json.dumps(cls.CASES))
-            for threads in ("0", "1"):
-                out = Path(d) / f"out{threads}.json"
+            # All threads, one thread, and the external compiler instead of the built-in one.
+            for run_name, threads, backend in (("0", "0", ""), ("1", "1", ""),
+                                               ("external", "0", "external")):  # fmt: skip
+                out = Path(d) / f"out{run_name}.json"
                 proc = subprocess.run(
                     [BLENDER, "-b", "--factory-startup", "--enable-autoexec", "-t", threads,
                      "--python-exit-code", "1", "--python", str(script), "--",
                      str(repo), str(cases), str(out)],
                     capture_output=True, text=True, timeout=600,
-                    env={**os.environ, "TOAST_CACHE_DIR": os.environ["TOAST_CACHE_DIR"]},
+                    env={**os.environ, "TOAST_CACHE_DIR": os.environ["TOAST_CACHE_DIR"],
+                         "TOAST_BACKEND": backend},
                 )  # fmt: skip
                 if proc.returncode != 0:
                     raise AssertionError(proc.stdout[-4000:] + proc.stderr[-4000:])
-                cls.results[threads] = json.loads(out.read_text())
+                cls.results[run_name] = json.loads(out.read_text())
 
     def bl(self, case):
         r = self.results["0"][case]
@@ -814,6 +817,15 @@ class TestBlenderNode(unittest.TestCase):
 
     def test_thread_count_does_not_matter(self):
         self.assertEqual(self.results["0"], self.results["1"])
+
+    def test_builtin_and_external_compilers_agree(self):
+        builtin, external = self.results["0"], self.results["external"]
+        for case in ("displace", "cull", "smooth"):
+            self.assertTrue(builtin[case]["kernel_path"].endswith(".cpp"), "built-in compiler used")
+            self.assertTrue(external[case]["kernel_path"].endswith(".so"), "external compiler used")
+        strip = lambda r: {k: {f: v for f, v in c.items() if f != "kernel_path"} if isinstance(c, dict) else c
+                           for k, c in r.items()}  # noqa: E731
+        self.assertEqual(strip(builtin), strip(external))
 
     def test_sockets_from_signature(self):
         self.assertEqual(self.bl("displace")["sockets"],

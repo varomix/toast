@@ -1148,13 +1148,13 @@ class Compiler:
             self.err("add_face() takes a tuple of 3 or more points, like add_face((a, b, c))", node)
         pts = self._point_refs("add_face", a.elts)
         self.uses_cmd = True
-        return E(f"toast::add_prim(c, i, {{{', '.join(pts)}}})", NONE)
+        return E(f"toast::add_prim(c, i, {', '.join(pts)})", NONE)
 
     def call_add_edge(self, node, expect):
         args = self._args(node, "add_edge", 2)
         pts = self._point_refs("add_edge", args)
         self.uses_cmd = True
-        return E(f"toast::add_prim(c, i, {{{', '.join(pts)}}})", NONE)
+        return E(f"toast::add_prim(c, i, {', '.join(pts)})", NONE)
 
     def call_remove_point(self, node, expect):
         (a,) = self._args(node, "remove_point", 1)

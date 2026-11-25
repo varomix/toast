@@ -21,7 +21,7 @@ import traceback
 
 import bpy
 
-from .build import build, cache_dir
+from .build import build, build_source, cache_dir
 from .compiler import LIB_PACKAGE, collect_libraries
 from .errors import ToastBuildError, ToastError
 from .libraries import file_resolver, library_dirs
@@ -61,9 +61,27 @@ def _libraries(source):
     return collect_libraries(source, lib_resolver)
 
 
+def builtin_compiler_available():
+    """True when this Blender has the built-in kernel compiler (`lib/libtoast_jit`)."""
+    program_dir = os.path.dirname(bpy.app.binary_path)
+    return os.path.exists(os.path.join(program_dir, "lib", "libtoast_jit.so"))
+
+
+def backend():
+    """'builtin' or 'external': $TOAST_BACKEND, else the add-on preference (Automatic picks the
+    built-in compiler when there is one)."""
+    choice = os.environ.get("TOAST_BACKEND", "").lower()
+    if not choice:
+        addon = bpy.context.preferences.addons.get(__package__)
+        choice = addon.preferences.backend.lower() if addon else "auto"
+    if choice == "auto":
+        return "builtin" if builtin_compiler_available() else "external"
+    return choice
+
+
 def _source_hash(source, run_over, libs):
     lib_part = "\0".join(f"{k}\0{v}" for k, v in sorted(libs.items()))
-    data = f"{VERSION}\0{run_over}\0{source}\0{lib_part}".encode()
+    data = f"{VERSION}\0{backend()}\0{run_over}\0{source}\0{lib_part}".encode()
     return hashlib.sha256(data).hexdigest()[:32]
 
 
@@ -92,7 +110,10 @@ def _compile_node(node, source, run_over, source_hash, lib_error=None):
         _assign(node, error=f"{text_name}: {lib_error}", source_hash=source_hash)
         return
     try:
-        kernel = build(source, run_over, lib_resolver=lib_resolver)
+        if backend() == "builtin":
+            kernel = build_source(source, run_over, lib_resolver=lib_resolver)
+        else:
+            kernel = build(source, run_over, lib_resolver=lib_resolver)
     except ToastError as ex:
         # Keep the previous signature so sockets and their links survive while the code is
         # being edited; the error stops evaluation and shows on the node.
@@ -270,13 +291,27 @@ class NODE_PT_toast(bpy.types.Panel):
 class TOAST_AddonPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
+    backend: bpy.props.EnumProperty(
+        name="Compiler",
+        description="How Toast code becomes native code",
+        items=(
+            ("AUTO", "Automatic", "The built-in compiler when this Blender has one, else external"),
+            ("BUILTIN", "Built-in", "Blender's built-in compiler (in memory, no installs needed)"),
+            ("EXTERNAL", "External", "An installed C++ compiler: $TOAST_CXX, clang++ or g++"),
+        ),
+        default="AUTO",
+    )
+
     def draw(self, context):
         layout = self.layout
+        layout.prop(self, "backend")
+        layout.label(text=f"Built-in compiler: {'available' if builtin_compiler_available() else 'not in this Blender'}"
+                     f", in use: {backend()}")
         layout.label(text=f"Toast {VERSION}. Kernel cache: {cache_dir()}")
         layout.label(text="Libraries (import toast_lib.<name>): a text named toast_lib.<name>, or")
         for d in library_dirs():
             layout.label(text=f"    {d}")
-        layout.label(text="Compiler: $TOAST_CXX, else clang++, else g++")
+        layout.label(text="External compiler: $TOAST_CXX, else clang++, else g++")
 
 
 CLASSES = (TOAST_OT_new_text, TOAST_OT_compile, TOAST_OT_edit_text, NODE_PT_toast,

@@ -135,3 +135,37 @@ def build(source, run_over="points", cxx=None, force=False, lib_resolver=None):
     os.replace(tmp_so, so_path)
     _write_atomic(sig_path, json.dumps(result.signature, indent=1, sort_keys=True))
     return Kernel(key, so_path, cpp_path, result.signature, cached=False)
+
+
+def self_contained(cpp):
+    """Generated C++ with toast_rt.h inlined, so a compiler needs no include path."""
+    include = '#include "toast_rt.h"'
+    assert include in cpp
+    return cpp.replace(include, RUNTIME_HEADER.read_text(), 1)
+
+
+def build_source(source, run_over="points", force=False, lib_resolver=None):
+    """Translate Toast ``source`` for Blender's built-in compiler: writes self-contained C++ to
+    the cache and returns a Kernel whose ``so_path`` is that ``.cpp`` file. The Toast node
+    compiles it in memory (and caches the object). Needs no external compiler.
+    """
+    from .libraries import file_resolver
+
+    libs = collect_libraries(source, lib_resolver or file_resolver)
+    parts = {
+        "source": source,
+        "libs": sorted((libs or {}).items()),
+        "run_over": run_over,
+        "toast": VERSION,
+        "runtime": _sha256(RUNTIME_HEADER.read_bytes()),
+        "backend": "builtin",
+    }
+    key = _sha256(json.dumps(parts, sort_keys=True).encode())[:32]
+    d = cache_dir()
+    cpp_path, sig_path = d / f"{key}.cpp", d / f"{key}.json"
+    if not force and cpp_path.exists() and sig_path.exists():
+        return Kernel(key, cpp_path, cpp_path, json.loads(sig_path.read_text()), cached=True)
+    result = compile_source(source, run_over, libs)
+    _write_atomic(cpp_path, self_contained(result.cpp))
+    _write_atomic(sig_path, json.dumps(result.signature, indent=1, sort_keys=True))
+    return Kernel(key, cpp_path, cpp_path, result.signature, cached=False)

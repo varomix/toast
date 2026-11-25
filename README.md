@@ -9,7 +9,9 @@ the way the fork's `GeometryNodeToast` will. User guide: `docs/guide.md`.
 toast/
   sugar.py          @ attributes -> _A.name on the token stream (line numbers kept)
   compiler.py       ast -> type inference -> C++ kernel + signature
-  build.py          compiler detection, ~/.cache/toast/<key>.{so,cpp,json}
+  build.py          ~/.cache/toast/<key>.*: build() compiles a .so with g++/clang++ (harness,
+                    External backend); build_source() writes self-contained C++ that the fork's
+                    built-in compiler (libtoast_jit) compiles in memory
   harness.py        ctypes host: binding, chunks on threads, nearpoints, command merge
   runtime/toast_rt.h  ABI, vector math, Blender-exact noise and hashes
 tests/
@@ -29,7 +31,8 @@ In Blender (the fork's `toast` branch): link this package as an add-on and enabl
 Geometry Nodes > Add > Toast > Toast, then in the sidebar (N) > Node > Toast press New. Edits in
 the Text Editor recompile automatically. Kernels only run with Auto Run Python Scripts allowed.
 
-Environment: `TOAST_CXX` (compiler, default clang++ then g++), `TOAST_CACHE_DIR`,
+Environment: `TOAST_BACKEND` (`builtin`/`external`, overrides the add-on's Compiler
+preference), `TOAST_CXX` (external compiler, default clang++ then g++), `TOAST_CACHE_DIR`,
 `TOAST_BLENDER` (Blender binary for the exactness test).
 
 ## Language
@@ -151,7 +154,8 @@ The hand C++ node is the `toast_plugin_noise_displace` plugin in the fork, calli
 and the noise code inlines. Toast's fixed cost per evaluation (kernel lookup, parameters, binding,
 ~0.5 ms) shows on small meshes.
 
-Compile of this kernel with g++: 0.4 s cold; reopening with a cached kernel costs ~4 ms.
+Compile of this kernel: ~0.1 s with the fork's built-in compiler (0.4 s with g++); reopening a
+file with the kernel cached costs a few ms.
 Read attributes are bound as views of Blender's arrays (copies only for snapshots, type
 conversions and an input-0 KD-tree, made in parallel). Before that change the 2.6M-point case
 took 14.6 ms. Toast now scales ~12x on 32 threads; the rest is work any node does around the
