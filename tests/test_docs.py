@@ -44,6 +44,17 @@ class TestGuide(unittest.TestCase):
             with self.subTest(code=code.splitlines()[0]):
                 toast.compile_source(code, run_over=run_over)
 
+    def test_every_template_compiles(self):
+        templates = sorted((ROOT / "toast" / "templates").glob("*.py"))
+        self.assertGreaterEqual(len(templates), 9)
+        for path in templates:
+            text = path.read_text()
+            header = [ln for ln in text.splitlines()[:4] if ln.startswith("# Run Over:")]
+            self.assertEqual(len(header), 1, path.name)
+            run_over = header[0].split(":", 1)[1].strip().upper().replace("FACE ", "")
+            with self.subTest(template=path.name):
+                toast.compile_source(text, run_over=run_over.lower())
+
     def test_grid_recipe(self):
         code = next(c for r, c in blocks() if r == "geometry")
         out = run(toast.build(code, run_over="geometry"), [Geometry({"position": np.zeros((0, 3),

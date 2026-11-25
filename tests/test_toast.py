@@ -152,7 +152,7 @@ class TestErrors(unittest.TestCase):
 
     def test_run_over(self):
         with self.assertRaises(toast.ToastError):
-            toast.compile_source("pass\n", run_over="instances")
+            toast.compile_source("pass\n", run_over="volumes")
 
     def test_domain_errors(self):
         for src, run_over, msg in (
@@ -764,6 +764,152 @@ def _blender_has_toast_node():
     return "TOAST_NODE_OK" in proc.stdout
 
 
+
+class TestLists(unittest.TestCase):
+    def run_points(self, code, n=4):
+        pos = np.zeros((n, 3), np.float32)
+        return run(toast.build(code), [Geometry({"position": pos})]).points
+
+    def test_fill_index_and_loop(self):
+        out = self.run_points("a = [0] * 5\nfor k in range(5):\n    a[k] = k * k\nt = 0\n"
+                              "for x in a:\n    t += x\n@t: int = t + len(a)\n")  # fmt: skip
+        np.testing.assert_array_equal(out["t"], [35] * 4)
+
+    def test_literal_types_and_negative_index(self):
+        out = self.run_points("a = [1, 2.5, 3]\nb: list[int] = [4, 5]\n"
+                              "@x: float = a[-1] + a[1] + float(b[-2])\n")  # fmt: skip
+        np.testing.assert_array_equal(out["x"], [9.5] * 4)
+
+    def test_out_of_range_is_safe(self):
+        out = self.run_points("a = [1.0] * 3\na[@index + 1] = 7.0\n@x: float = a[@index + 5] + a[1]\n")
+        np.testing.assert_array_equal(out["x"], [7, 1, 1, 1])
+
+    def test_lists_of_vectors_and_helpers(self):
+        code = ("def total(v):\n    t = vec3(0, 0, 0)\n    for x in v:\n        t += x\n    return t\n"
+                "vs = [(1, 0, 0), (0, 2, 0), (0, 0, 3)]\n@s: vec3 = total(vs)\n")  # fmt: skip
+        out = self.run_points(code)
+        np.testing.assert_array_equal(out["s"], [[1, 2, 3]] * 4)
+
+    def test_list_as_vector_where_a_vector_is_expected(self):
+        out = self.run_points("@position = [0, 0, 1]\n")
+        np.testing.assert_array_equal(out["position"], [[0, 0, 1]] * 4)
+
+    def test_errors(self):
+        for src, msg in (
+            ("a = []\n", "an empty list has no size"),
+            ("a = [0] * 5000\n", "between 1 and 4096"),
+            ("a = [1, 2]\na.append(3)\n", "fixed size"),
+            ("a = [1, (0, 0, 0)]\n", "same type"),
+            ("a = [1, 2]\na = [1, 2, 3]\n", "can't assign"),
+            ("a = [1.0] * 3\n@x = a\n", "can't hold"),
+            ("a = [1.0] * 3\nb = a + a\n", "can't be used with"),
+        ):  # fmt: skip
+            with self.subTest(src=src), self.assertRaises(toast.ToastError) as cm:
+                toast.compile_source(src)
+            self.assertIn(msg, cm.exception.message)
+
+
+class TestRotations(unittest.TestCase):
+    def one(self, code):
+        out = run(toast.build(code), [Geometry({"position": np.zeros((1, 3), np.float32)})])
+        return out.points
+
+    def test_rotate_compose_inverse(self):
+        out = self.one(
+            "q = quat_axis_angle((0, 0, 1), math.pi / 2)\n@r: vec3 = rotate(q, (1, 0, 0))\n"
+            "m = mat4_compose((1, 2, 3), q, 2.0)\n@p: vec3 = transform_point(m, (1, 0, 0))\n"
+            "@b: vec3 = transform_point(inverse(m), @p)\n@d: vec3 = transform_direction(m, (1, 0, 0))\n"
+            "@t: vec3 = m.translation\n@s: vec3 = m.scale\n"
+        )  # fmt: skip
+        np.testing.assert_allclose(out["r"][0], [0, 1, 0], atol=1e-6)
+        np.testing.assert_allclose(out["p"][0], [1, 4, 3], atol=1e-6)
+        np.testing.assert_allclose(out["b"][0], [1, 0, 0], atol=1e-6)
+        np.testing.assert_allclose(out["d"][0], [0, 2, 0], atol=1e-6)
+        np.testing.assert_allclose(out["t"][0], [1, 2, 3])
+        np.testing.assert_allclose(out["s"][0], [2, 2, 2], atol=1e-6)
+
+    def test_euler_round_trip_and_slerp(self):
+        out = self.one(
+            "e = (0.3, -0.4, 1.2)\n@e: vec3 = to_euler(quat_euler(e))\n"
+            "@m: vec3 = to_euler(mat4_rotation(quat_euler(e)).rotation)\n"
+            "@h: quat = slerp(quat(), quat_axis_angle((0, 0, 1), 1.0), 0.5)\n"
+            "@w: float = (quat_axis_angle((1, 0, 0), 0.4) * inverse(quat_axis_angle((1, 0, 0), 0.4))).w\n"
+            "@between: vec3 = rotate(quat_between((1, 0, 0), (0, -1, 0)), (1, 0, 0))\n"
+            "@opposite: vec3 = rotate(quat_between((1, 0, 0), (-1, 0, 0)), (1, 0, 0))\n"
+        )  # fmt: skip
+        np.testing.assert_allclose(out["e"][0], [0.3, -0.4, 1.2], atol=1e-6)
+        np.testing.assert_allclose(out["m"][0], [0.3, -0.4, 1.2], atol=1e-6)
+        np.testing.assert_allclose(out["h"][0], [np.cos(0.25), 0, 0, np.sin(0.25)], atol=1e-6)
+        np.testing.assert_allclose(out["w"][0], 1.0, atol=1e-6)
+        np.testing.assert_allclose(out["between"][0], [0, -1, 0], atol=1e-6)
+        np.testing.assert_allclose(out["opposite"][0], [-1, 0, 0], atol=1e-6)
+
+    def test_mat4_layout_is_column_major(self):
+        out = self.one("@m: mat4 = mat4_translation((1, 2, 3))\n")
+        np.testing.assert_array_equal(out["m"][0][3], [1, 2, 3, 1])
+
+    def test_singular_inverse_is_zero(self):
+        out = self.one("@m: mat4 = inverse(mat4_scale(0.0))\n")
+        np.testing.assert_array_equal(out["m"][0], np.zeros((4, 4)))
+
+    def test_curl_noise_is_divergence_free(self):
+        pts = np.random.default_rng(1).random((64, 3)).astype(np.float32) * 4
+        e = 1e-2
+        offsets = [(e, 0, 0), (-e, 0, 0), (0, e, 0), (0, -e, 0), (0, 0, e), (0, 0, -e)]
+        geo = Geometry({"position": np.concatenate([pts + np.float32(o) for o in offsets])})
+        c = run(toast.build("@c: vec3 = curl_noise(@position)\n"), [geo]).points["c"].reshape(6, 64, 3)
+        div = (c[0, :, 0] - c[1, :, 0] + c[2, :, 1] - c[3, :, 1] + c[4, :, 2] - c[5, :, 2]) / (2 * e)
+        scale = np.abs(c).mean()
+        self.assertLess(np.abs(div).mean(), 0.05 * scale / e * e + 0.05)
+
+    def test_errors(self):
+        for src, msg in (
+            ("q = quat() * (1, 0, 0)\n", "rotate(q, v)"),
+            ("m = mat4() * (1, 0, 0)\n", "transform_point"),
+            ("q = quat(1, 0, 0)\n", "4 numbers"),
+            ("m = mat4()\nm.translation = (1, 0, 0)\n", "read-only"),
+            ("m = mat4()\nx = m.foo\n", "has no property"),
+            ("q = quat() + quat()\n", "can only be multiplied"),
+        ):  # fmt: skip
+            with self.subTest(src=src), self.assertRaises(toast.ToastError) as cm:
+                toast.compile_source(src)
+            self.assertIn(msg, cm.exception.message)
+
+
+class TestCurvesAndInstances(unittest.TestCase):
+    def test_mode_errors(self):
+        for src, run_over, msg in (
+            ("add_point((0, 0, 0))\n", "curves", "points can only be added"),
+            ("remove_point(0)\n", "instances", "use remove_instance()"),
+            ("x = point_attr(0, 'a', 0)\n", "instances", "only instances"),
+            ("remove_face(0)\n", "curves", "no faces"),
+            ("remove_instance(0)\n", "points", "doesn't work with Run Over Points"),
+            ("remove_curve(0)\n", "faces", "doesn't work with Run Over Faces"),
+            ("for p in curve_points(0, 0, 8):\n    pass\n", "faces", "no curves"),
+        ):  # fmt: skip
+            with self.subTest(src=src), self.assertRaises(toast.ToastError) as cm:
+                toast.compile_source(src, run_over=run_over)
+            self.assertIn(msg, cm.exception.message)
+
+    def test_curve_attr_and_input1(self):
+        curves = Geometry({"position": np.zeros((5, 3), np.float32)}, curves=[[0, 1], [2, 3, 4]],
+                          curve_attrs={"radius_scale": np.array([2.0, 3.0], np.float32)})  # fmt: skip
+        code = ("@k: float = curve_attr(1, 'radius_scale', @index % 2)\n"
+                "n = 0\nfor p in curve_points(1, 1, 8):\n    n += 1\n@n: int = n + 10 * curve_count(1)\n")  # fmt: skip
+        out = run(toast.build(code), [Geometry({"position": np.zeros((3, 3), np.float32)}), curves])
+        np.testing.assert_array_equal(out.points["k"], [2, 3, 2])
+        np.testing.assert_array_equal(out.points["n"], [23] * 3)
+
+    def test_instance_position_and_transform(self):
+        t = np.tile(np.eye(4, dtype=np.float32), (2, 1, 1))
+        code = ("@transform = mat4_compose((5, 5, 5), quat(), 3.0)\n"
+                "@position = (float(@index), 0, 0)\n")  # fmt: skip
+        out = run(toast.build(code, run_over="instances"), [Geometry(instance_attrs={"transform": t})])
+        m = out.instance_attrs["transform"]
+        np.testing.assert_array_equal(m[:, 3, :3], [[0, 0, 0], [1, 0, 0]])  # @position wins
+        np.testing.assert_array_equal(m[:, 0, 0], [3, 3])
+
+
 @unittest.skipUnless(_blender_has_toast_node(), "Blender with GeometryNodeToast not found")
 class TestBlenderNode(unittest.TestCase):
     """The fork's GeometryNodeToast gives the same bits as the harness, at any thread count."""
@@ -1216,6 +1362,176 @@ class TestBlenderSelection(unittest.TestCase):
         kept = [f for f, s in zip(r["input"]["faces"], r["input"]["sel"]) if not s]
         self.assertEqual(r["faces"], kept)
         self.assertEqual(r["faces"], out.prims)
+
+
+
+CURVES_POINTS_CODE = "@position.z += @index * 0.5\n@w: float = noise(@position)\n"
+CURVES_CODE = """
+n = 0
+for p in curve_points(0, @index, 64):
+    n += 1
+@npts: int = n
+@nc: int = curve_count(0)
+@c: vec3 = @position
+if @index == 0:
+    remove_curve(@index)
+"""
+INSTANCES_CODE = """
+@position += (0, 0, @index)
+@spin: quat = quat_axis_angle((0, 0, 1), @index * 0.3)
+@m: mat4 = mat4_translation((1, 2, 3)) * mat4_rotation(@spin)
+if @index == 2:
+    remove_instance(@index)
+"""
+GRID_TYPES_CODE = """
+@q: quat = quat_euler(@position)
+@m: mat4 = mat4_compose(@position, @q, 2.0)
+a = [0.0] * 3
+a[@index % 3] = 1.0
+@a: vec3 = vec3(a[0], a[1], a[2])
+@curl: vec3 = curl_noise(@position)
+@e: vec3 = to_euler(@m.rotation)
+"""
+
+
+@unittest.skipUnless(_blender_has_toast_node(), "Blender with GeometryNodeToast not found")
+class TestBlenderTypes(unittest.TestCase):
+    """Curves, instances, quat/mat4 attributes and lists in the fork, bit for bit with the
+    harness."""
+
+    CASES = [
+        {"name": "curve_points", "input": "curves", "run_over": "POINTS", "code": CURVES_POINTS_CODE},
+        {"name": "curves", "input": "curves", "run_over": "CURVES", "code": CURVES_CODE},
+        {"name": "curve_remove_points", "input": "curves", "run_over": "POINTS",
+         "code": "if @position.x > 1.5:\n    remove_point(@index)\n"},
+        {"name": "instances", "input": "instances", "run_over": "INSTANCES", "code": INSTANCES_CODE},
+        {"name": "grid_types", "input": "grid", "run_over": "POINTS", "code": GRID_TYPES_CODE},
+        {"name": "remove_curve_on_mesh", "input": "grid", "run_over": "POINTS",
+         "code": "remove_curve(0)\n"},
+    ]  # fmt: skip
+    CURVE_POINTS = np.array([(0, 0, 0), (1, 0, 0), (2, 0.5, 0), (0, 1, 0), (1, 1, 0.5), (2, 1, 0),
+                             (3, 1.5, 0)], np.float32)  # fmt: skip
+
+    @classmethod
+    def setUpClass(cls):
+        repo = Path(__file__).resolve().parents[1]
+        script = Path(__file__).resolve().parent / "blender_types_check.py"
+        with tempfile.TemporaryDirectory() as d:
+            cases = Path(d) / "cases.json"
+            cases.write_text(json.dumps(cls.CASES))
+            proc = subprocess.run(
+                [BLENDER, "-b", "--factory-startup", "--enable-autoexec", "--python-exit-code",
+                 "1", "--python", str(script), "--", str(repo), str(cases)],
+                capture_output=True, text=True, timeout=300,
+            )  # fmt: skip
+        line = [ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")]
+        if proc.returncode != 0 or not line:
+            raise AssertionError(proc.stdout[-3000:] + proc.stderr[-3000:])
+        cls.r = json.loads(line[0][len("RESULT "):])
+
+    @staticmethod
+    def f32(b, shape=None):
+        a = np.array(b, dtype=np.uint32).view(np.float32)
+        return a.reshape(shape) if shape else a
+
+    def ok(self, name):
+        r = self.r[name]
+        self.assertEqual((r["error"], r["warnings"]), ("", []))
+        return r
+
+    def curves_input(self):
+        return Geometry({"position": self.CURVE_POINTS.copy()}, curves=[[0, 1, 2], [3, 4, 5, 6]])
+
+    def assert_bits(self, got_bits, want):
+        want = np.ascontiguousarray(want, dtype=np.float32).reshape(-1)
+        np.testing.assert_array_equal(np.array(got_bits, np.uint32), want.view(np.uint32))
+
+    def test_points_of_curves(self):
+        r = self.ok("curve_points")
+        out = run(toast.build(CURVES_POINTS_CODE), [self.curves_input()])
+        self.assertEqual(r["curves"], [3, 4])
+        self.assert_bits(r["P"], out.points["position"])
+        self.assert_bits(r["attrs"]["w"]["values"], out.points["w"])
+
+    def test_curves(self):
+        r = self.ok("curves")
+        out = run(toast.build(CURVES_CODE, run_over="curves"), [self.curves_input()])
+        self.assertEqual(r["curves"], [len(c) for c in out.curves])
+        self.assertEqual(r["curves"], [4])
+        self.assert_bits(r["P"], out.points["position"])
+        for name in ("npts", "nc"):
+            self.assertEqual(r["attrs"][name]["domain"], "CURVE")
+            self.assertEqual(r["attrs"][name]["values"], out.curve_attrs[name].tolist())
+        self.assert_bits(r["attrs"]["c"]["values"], out.curve_attrs["c"])
+
+    def test_remove_points_of_curves(self):
+        r = self.ok("curve_remove_points")
+        code = "if @position.x > 1.5:\n    remove_point(@index)\n"
+        out = run(toast.build(code), [self.curves_input()])
+        self.assertEqual(r["curves"], [len(c) for c in out.curves])
+        self.assert_bits(r["P"], out.points["position"])
+
+    def test_instances(self):
+        r = self.ok("instances")
+        transforms = np.tile(np.eye(4, dtype=np.float32), (4, 1, 1))
+        transforms[:, 3, 0] = np.arange(4)
+        out = run(toast.build(INSTANCES_CODE, run_over="instances"),
+                  [Geometry(instance_attrs={"transform": transforms})])  # fmt: skip
+        self.assertEqual(r["count"], 3)
+        self.assertEqual(r["attrs"]["spin"]["type"], "QUATERNION")
+        self.assertEqual(r["attrs"]["m"]["type"], "FLOAT4X4")
+        self.assert_bits(r["attrs"]["instance_transform"]["values"], out.instance_attrs["transform"])
+        self.assert_bits(r["attrs"]["spin"]["values"], out.instance_attrs["spin"])
+        self.assert_bits(r["attrs"]["m"]["values"], out.instance_attrs["m"])
+
+    def test_quat_mat4_and_lists_on_a_mesh(self):
+        r = self.ok("grid_types")
+        positions = self.f32(r["P"], (-1, 3))
+        out = run(toast.build(GRID_TYPES_CODE), [Geometry({"position": positions.copy()})])
+        self.assertEqual(r["attrs"]["q"]["type"], "QUATERNION")
+        self.assertEqual(r["attrs"]["m"]["type"], "FLOAT4X4")
+        for name in ("q", "m", "a", "curl", "e"):
+            self.assert_bits(r["attrs"][name]["values"], out.points[name])
+
+    def test_remove_curve_needs_curves(self):
+        r = self.r["remove_curve_on_mesh"]
+        self.assertIn("remove_curve() needs curves", " ".join(r["warnings"]))
+
+
+
+@unittest.skipUnless(_blender_has_toast_node(), "Blender with GeometryNodeToast not found")
+class TestBlenderEditor(unittest.TestCase):
+    """Templates, error locations and compile status (headless)."""
+
+    @classmethod
+    def setUpClass(cls):
+        repo = Path(__file__).resolve().parents[1]
+        script = Path(__file__).resolve().parent / "blender_ui_check.py"
+        proc = subprocess.run(
+            [BLENDER, "-b", "--factory-startup", "--enable-autoexec", "--python-exit-code", "1",
+             "--python", str(script), "--", str(repo)],
+            capture_output=True, text=True, timeout=300,
+        )  # fmt: skip
+        line = [ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")]
+        if proc.returncode != 0 or not line:
+            raise AssertionError(proc.stdout[-3000:] + proc.stderr[-3000:])
+        cls.r = json.loads(line[0][len("RESULT "):])
+
+    def test_templates(self):
+        self.assertIn("01_displace_with_noise", self.r["templates"])
+        self.assertTrue(self.r["template_text"])
+
+    def test_error_locations(self):
+        self.assertEqual(self.r["syntax_error"][1:], ["code", 2])
+        self.assertEqual(self.r["library_error"][1:], ["toast_lib.bad", 2])
+
+    def test_status(self):
+        self.assertEqual(self.r["status"][0], "ok")
+        self.assertEqual(self.r["status_again"][0], "cached")
+
+    def test_registered(self):
+        self.assertEqual(self.r["registered"], {"panel": True, "menu": True,
+                                                "text_templates_menu": True})  # fmt: skip
 
 
 if __name__ == "__main__":

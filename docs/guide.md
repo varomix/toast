@@ -1,8 +1,8 @@
 # Toast guide
 
 Toast lets you write the inside of a geometry node in Python syntax. The code runs once per point
-(or face, edge, corner), on every CPU core, compiled to native code: no Python runs while Blender
-evaluates the node tree.
+(or face, edge, corner, curve, instance), on every CPU core, compiled to native code: no Python
+runs while Blender evaluates the node tree.
 
 ```toast
 amp = param("amp", 0.2)
@@ -18,12 +18,24 @@ n = noise(@position * param("freq", 4.0))
 2. Allow **Auto Run Python Scripts** (Preferences > Save & Load), or trust the file. Toast code
    in a `.blend` runs native code, so it follows the same rule as Python drivers.
 3. In a Geometry Nodes tree, add **Toast > Toast**. In the sidebar (N) > Node > Toast, press
-   **New** to create a text with starter code, and **Edit Code** to show it in a Text Editor.
+   **New** to create a text with starter code, or pick one from **Templates**.
 
 The node recompiles a moment after you stop typing: Blender's built-in compiler turns the code
 into native code in about 0.1 s, and reopening a file reuses the compiled code. Don't press Run
-Script in the Text Editor: Toast code isn't plain Python. Errors show on the node header and in
-the Toast panel, with the line number.
+Script in the Text Editor: Toast code isn't plain Python.
+
+### Editing
+
+- **Follow Active Node** (on by default, in the Toast panel and the add-on preferences): selecting
+  a Toast node shows its code in the Text Editor of the same window. Turn it off to keep the
+  Text Editor on whatever you are editing.
+- **Templates**: starter code for common jobs (noise, smoothing, scattering onto a surface,
+  curves, instances...). In the node's Toast panel, a template is used by the node and sets its
+  Run Over; in the Text Editor (Templates > Toast) it only creates the text.
+- **Errors** show on the node header, in the node's Toast panel and in the Text Editor's sidebar
+  (N) > Toast, with **Go to Error**, which puts the cursor on the line (also inside a library).
+- **Status**: the Toast panels say whether the code is up to date, waiting for you to stop
+  typing, or reused from an earlier compile.
 
 ## The node
 
@@ -31,18 +43,24 @@ the Toast panel, with the line number.
 | --- | --- |
 | Geometry | The geometry the code runs on and writes to (input 0). |
 | Selection | Elements to run on (a boolean field). Others are left unchanged. |
-| Input 1 | Another geometry the code can read: `point_attr(1, ...)`, `ray_cast(1, ...)`. |
+| Input 1 | Another geometry the code can read: `point_attr(1, ...)`, `ray_cast(1, ...)`. Its points are those of its mesh, else its point cloud, curves or instances. |
 | *params* | One socket per `param()` in the code. |
 
 **Run Over** sets what the code runs once for:
 
 | Run Over | Runs once per | `@` attributes live on |
 | --- | --- | --- |
-| Points | point | points |
+| Points | point of the mesh, point cloud and curves | points |
 | Faces | face | faces (`@position` reads the face center) |
 | Edges | edge | edges |
 | Face Corners | face corner | corners |
+| Curves | curve | curves (`@position` reads the average of its points) |
+| Instances | instance of the top-level geometry | instances (`@position`, `@transform`) |
 | Geometry | once for the whole geometry | (none) |
+
+With Points, the code runs separately on each part that has points: the mesh, the point cloud and
+the curves. Input 0 is then the part being run on: `point_count(0)` and `nearby_points(0, ...)`
+see only its points.
 
 Every element runs independently and in parallel. Writing `@name` changes the current element
 only; to change other elements, use `set_point_attr()` and the topology functions below, which
@@ -52,9 +70,9 @@ are applied after the run in element order. The result never depends on the numb
 
 Toast is a statically typed subset of Python.
 
-- **Types:** `float`, `int`, `bool`, `vec2`, `vec3`, `vec4`. A variable's type is fixed by its
-  first assignment; annotate to choose one: `x: float = 1`. Tuples of 2 to 4 numbers are
-  vectors: `(0, 0, 1)`.
+- **Types:** `float`, `int`, `bool`, `vec2`, `vec3`, `vec4`, `quat` (a rotation), `mat4` (a
+  transform) and lists. A variable's type is fixed by its first assignment; annotate to choose
+  one: `x: float = 1`. Tuples of 2 to 4 numbers are vectors: `(0, 0, 1)`.
 - **Vectors:** `v.x`, `v.xy`, `v.zyx`, `v[0]`; `v.x = 1` sets one component. `+ - * /` work
   between vectors of the same size and between a vector and a number.
 - **Control flow:** `if/elif/else`, `while`, `for i in range(...)`, `break`, `continue`,
@@ -62,8 +80,59 @@ Toast is a statically typed subset of Python.
   ends the current element.
 - **Numbers:** `%`, `//` and `/` follow Python (`7 / 2` is `3.5`). Integer division by zero gives
   0 instead of crashing Blender.
-- **Not supported:** classes, lists and dicts, strings (except as names), recursion, `*args`,
-  imports other than `math` and Toast libraries.
+- **Not supported:** classes, dicts, growing lists, strings (except as names), recursion,
+  `*args`, imports other than `math` and Toast libraries.
+
+### Lists
+
+Lists have a fixed size, known when the code compiles (at most 4096 values):
+
+```toast
+d = [0.0] * 8                 # 8 floats, all 0
+weights = [0.25, 0.5, 0.25]   # 3 floats
+corners: list[vec3] = [(0, 0, 0), (1, 0, 0), (1, 1, 0)]
+d[0] = 1.5
+d[-1] += 2                    # -1 is the last value, as in Python
+total = 0.0
+for w in weights:
+    total += w
+@n: int = len(d)
+```
+
+Reading outside the list gives 0 and writing outside it does nothing, so a wrong index never
+crashes Blender. Lists are values, like vectors: `b = a` and passing `a` to a helper make a copy
+(unlike Python), so return a changed list from a helper. A list can't be stored in an attribute,
+and there is no `append()`. Where a vector is expected, a list of numbers is a vector:
+`@position = [0, 0, 1]`.
+
+### Rotations and transforms
+
+`quat` is a rotation and `mat4` a 4x4 transform, the same as Blender's Rotation and Matrix
+sockets and attributes.
+
+```toast
+q = quat_axis_angle((0, 0, 1), math.pi / 2)
+v = rotate(q, (1, 0, 0))                      # (0, 1, 0)
+m = mat4_compose((1, 2, 3), q, 2.0)           # location, rotation, scale
+p = transform_point(m, (1, 0, 0))             # (1, 4, 3)
+back = transform_point(inverse(m), p)
+@spin: quat = q * quat_euler((0.1, 0, 0))     # combine rotations with *
+@xform: mat4 = m * mat4_translation((0, 0, 1))
+location = m.translation                      # also m.rotation, m.scale
+```
+
+| Function | Returns |
+| --- | --- |
+| `quat()`, `quat(w, x, y, z)` | No rotation, or a quaternion from components (`.w .x .y .z` read them). |
+| `quat_axis_angle(axis, angle)`, `quat_euler(xyz)`, `quat_between(a, b)` | A rotation around an axis, from XYZ Euler angles (radians), or the smallest rotation turning direction `a` into `b`. |
+| `rotate(q, v)`, `slerp(a, b, t)`, `to_euler(q)`, `normalize(q)` | Rotate a vector; blend rotations; Euler angles of a rotation. |
+| `mat4()`, `mat4_translation(v)`, `mat4_rotation(q)`, `mat4_scale(s)`, `mat4_compose(location, rotation, scale)` | Transforms (`s` is a number or vec3). |
+| `transform_point(m, p)`, `transform_direction(m, d)` | Transform a point, or a direction (ignoring the location). |
+| `inverse(q or m)`, `transpose(m)` | A transform that can't be inverted gives a zero matrix. |
+| `m.translation`, `m.rotation`, `m.scale` | The parts of a transform (read-only). |
+
+`*` combines two rotations or two transforms; to apply them to a vector, use `rotate()` or
+`transform_point()`.
 
 ### Attributes
 
@@ -77,6 +146,7 @@ Toast is a statically typed subset of Python.
 | `@velocity` | vec3 | |
 | `@radius` | float | |
 | `@id` | int | |
+| `@transform` | mat4 | With Run Over Instances: the instance's transform. |
 | `@index` | int | Index of the current element (read-only). |
 | `@count` | int | Number of elements in the Run Over domain (read-only). |
 | `@frame`, `@time` | float | Scene frame and time in seconds (read-only). |
@@ -92,6 +162,10 @@ assigned value, or is `float`:
 ```
 
 Writing an attribute that doesn't exist creates it on the Run Over domain.
+
+With Run Over Instances, `@position` is the location of the instance's transform: writing it
+moves the instance. When the code writes both `@transform` and `@position`, the location comes
+from `@position`.
 
 ### Parameters
 
@@ -149,6 +223,7 @@ Editing a library recompiles every node that uses it.
 | Function | Notes |
 | --- | --- |
 | `sin cos tan asin acos atan sinh cosh tanh exp log log2 log10 sqrt` | Numbers and vectors (per component). |
+| `len(list)` | The size of a list (or a vector). |
 | `floor ceil trunc abs frac sign radians degrees` | Same. `math.floor/ceil/trunc` return int, as in Python. |
 | `pow(x, y)`, `atan2(y, x)`, `fmod(x, y)`, `min`, `max` | |
 | `clamp(x, lo, hi)` | |
@@ -171,6 +246,7 @@ These match Blender's nodes exactly (bit for bit). Put the scale in the position
 | `voronoi(p, randomness=1)` | Voronoi Texture (3D, F1, Euclidean). Returns a cell with `.distance`, `.color`, `.position`. |
 | `random(id, seed)` | Random Value node (Float, 0..1). |
 | `hash01(x)` | A hash of `x` in 0..1 (int, float or vector). |
+| `curl_noise(p)` | A swirling vec3 field (the curl of three noises): moving points along it looks like smoke or water. Toast's own, there is no Blender node for it. |
 
 ### Reading geometry
 
@@ -180,7 +256,8 @@ These match Blender's nodes exactly (bit for bit). Put the scale in the position
 | --- | --- |
 | `point_attr(input, "name", index)` | An attribute of a point. Annotate for its type: `v: vec3 = point_attr(1, "velocity", j)`. |
 | `face_attr(input, "name", index)` | An attribute of a face. |
-| `point_count(input)`, `face_count(input)` | Element counts. |
+| `curve_attr(input, "name", index)`, `instance_attr(input, "name", index)` | An attribute of a curve or an instance. |
+| `point_count(input)`, `face_count(input)`, `curve_count(input)` | Element counts. |
 | `nearest_point(input, position, radius)` | The closest point within `radius`, or -1. |
 | `corner_point(input, corner)`, `corner_face(input, corner)` | The point and face of a face corner, or -1. |
 | `ray_cast(input, origin, direction, max_distance)` | A hit: `.hit`, `.position`, `.normal`, `.distance`, `.face` (-1 without a hit). |
@@ -193,6 +270,7 @@ Loops over related elements take a constant maximum count:
 | --- | --- |
 | `for j in nearby_points(input, position, radius, max_count):` | Points within `radius`, closest first. |
 | `for p in face_points(input, face, max_count):` | The points of a face, in order. |
+| `for p in curve_points(input, curve, max_count):` | The points of a curve, from root to tip. |
 | `for f in point_faces(input, point, max_count):` | The faces using a point. |
 | `for q in point_neighbors(input, point, max_count):` | Points sharing an edge with a point. |
 
@@ -208,10 +286,14 @@ attributes the code is writing.
 | `add_face((a, b, c, ...))` | Adds a face through 3 or more points. |
 | `remove_point(p)` | Removes a point and the edges and faces using it. |
 | `remove_face(f)` | Removes a face and keeps its points (like Delete Geometry, Only Faces). |
+| `remove_curve(c)` | Removes a curve and its points. |
+| `remove_instance(i)` | Removes an instance (Run Over Instances). |
 | `set_point_attr(index, "name", value)`, `set_face_attr(...)` | Writes another element's attribute. |
 
 These are applied after the run in element order: new elements are numbered by the element that
-created them, and when several elements write the same attribute, the highest index wins.
+created them, and when several elements write the same attribute, the highest index wins. On
+curves, points and curves can be removed but not added; removing the last point of a curve
+removes the curve.
 
 ## Cookbook
 
@@ -302,6 +384,27 @@ Point numbers from `point_count(0)` on are the points added in this run, in the 
 added (element by element, then in the order each element adds them). That is how the result
 numbers them, so with Run Over Geometry you can compute them, as here.
 
+### Swirl points with curl noise
+
+```toast
+@position += curl_noise(@position * param("freq", 1.5) + (0, 0, @time * 0.2)) * 0.1
+```
+
+### Randomize instances (Run Over: Instances)
+
+```toast instances
+angle = random(@index, 0) * math.tau
+s = map_range(random(@index, 1), 0, 1, 0.5, 1.5)
+@transform = @transform * mat4_compose((0, 0, 0), quat_axis_angle((0, 0, 1), angle), s)
+```
+
+### Keep half of the curves (Run Over: Curves)
+
+```toast curves
+if random(@index, param("seed", 0)) > 0.5:
+    remove_curve(@index)
+```
+
 ### Mark where faces touch each point (Run Over: Faces)
 
 ```toast faces
@@ -323,8 +426,9 @@ Errors name the line, and spellings from earlier Toast versions tell you the new
 
 ## Limits
 
-- Points, faces, edges and corners of meshes; points of point clouds. Curves and instances are
-  not supported yet.
+- Meshes, point clouds, curves and instances. Volumes and Grease Pencil are not supported.
+- Run Over Instances changes the instances of the top-level geometry only, like Blender's
+  instance nodes; geometry inside instances runs with the other modes.
 - Linux and macOS (the node loads compiled code with `dlopen`).
 - No compiler needs to be installed on Linux: the fork has a built-in one. Elsewhere, or with
   the add-on's Compiler preference set to External, Toast uses g++ or clang++ (`TOAST_CXX` picks

@@ -18,25 +18,48 @@ from dataclasses import dataclass, field
 from .errors import ToastError
 from .sugar import ATTR_OBJECT, desugar
 from .types import (
-    VORONOI,
+    ARRAY_ELEMENTS,
+    ARRAY_MAX,
     BOOL,
     BY_NAME,
     FLOAT,
     HIT,
-    RECORDS,
     INT,
     KNOWN_ATTRS,
+    MAT4,
     NONE,
     POINTREF,
+    PROPERTIES,
+    QUAT,
+    RECORDS,
     VEC3,
     VECS,
+    VORONOI,
+    array_parts,
+    array_type,
 )
 from .version import ABI_VERSION, VERSION
 
-RUN_OVER = ("points", "faces", "edges", "corners", "geometry")
+RUN_OVER = ("points", "faces", "edges", "corners", "curves", "instances", "geometry")
 # Domain of `@` attributes for each run-over mode ("geometry" runs once and has none).
-RUN_DOMAIN = {"points": "point", "faces": "face", "edges": "edge", "corners": "corner", "geometry": None}
-DOMAIN_SUFFIX = {"point": "", "face": "f", "edge": "e", "corner": "c"}
+RUN_DOMAIN = {
+    "points": "point", "faces": "face", "edges": "edge", "corners": "corner", "curves": "curve",
+    "instances": "instance", "geometry": None,
+}  # fmt: skip
+DOMAIN_SUFFIX = {"point": "", "face": "f", "edge": "e", "corner": "c", "curve": "k", "instance": "n"}
+# Domains input 0 has in each mode. With Run Over Points the code runs on meshes, point clouds and
+# curves alike, so anything may exist.
+INPUT0_DOMAINS = {
+    "points": {"point", "face", "edge", "corner", "curve"},
+    "faces": {"point", "face", "edge", "corner"},
+    "edges": {"point", "face", "edge", "corner"},
+    "corners": {"point", "face", "edge", "corner"},
+    "curves": {"point", "curve"},
+    "instances": {"instance"},
+    "geometry": {"point", "face", "edge", "corner"},
+}
+DOMAIN_WORD = {"point": "points", "face": "faces", "edge": "edges", "corner": "face corners",
+               "curve": "curves", "instance": "instances"}  # fmt: skip
 
 MAIN = "__main__"
 LIB_PACKAGE = "toast_lib"
@@ -86,7 +109,13 @@ BUILTINS = set(UNARY_MATH) | {
     "face_points", "add_point", "add_face", "add_edge", "remove_point", "remove_face", "range",
     "point_faces", "point_neighbors", "corner_point", "corner_face", "set_point_attr",
     "set_face_attr", "ray_cast", "closest_point", "sample_nearest_surface", "voronoi",
+    "curl_noise", "len", "curve_attr", "instance_attr", "curve_count", "curve_points",
+    "remove_curve", "remove_instance", "quat", "mat4", "quat_axis_angle", "quat_euler",
+    "quat_between", "rotate", "slerp", "inverse", "to_euler", "transpose", "transform_point",
+    "transform_direction", "mat4_translation", "mat4_rotation", "mat4_scale", "mat4_compose",
 }  # fmt: skip
+LOOP_FUNCTIONS = ("range", "nearby_points", "face_points", "point_faces", "point_neighbors",
+                  "curve_points")  # fmt: skip
 
 BINOPS = {
     ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/", ast.FloorDiv: "//",
@@ -384,8 +413,6 @@ class Compiler:
             return f"toast::truth({e.code})"
         if e.type == HIT:
             self.err("a hit can't be used as a condition, use its .hit field", node)
-        if e.type in RECORDS:
-            self.err(f"a {e.type} can't be used as a condition", node)
         self.err(f"a {e.type} can't be used as a condition", node)
 
     def _num(self, e, node, what):
@@ -459,6 +486,16 @@ class Compiler:
                 self.err(f"a {base.type} has no field '.{node.attr}' (it has "
                          f"{', '.join(fields)})", node)  # fmt: skip
             return E(f"({base.code}).{node.attr}", fields[node.attr])
+        if base.type in PROPERTIES:
+            props = PROPERTIES[base.type]
+            if node.attr not in props:
+                self.err(f"a {base.type} has no property '.{node.attr}' (it has "
+                         f"{', '.join(props)})", node)  # fmt: skip
+            t, code = props[node.attr]
+            return E(code.format(base.code), t)
+        if base.type.is_array:
+            self.err(f"a list has no '.{node.attr}': lists have a fixed size in Toast, create "
+                     "them with [value] * count", node)  # fmt: skip
         return self._swizzle(base, node.attr, node)
 
     def _swizzle(self, base, letters, node):
@@ -482,6 +519,8 @@ class Compiler:
 
     def expr_Subscript(self, node, expect):
         base = self.expr(node.value)
+        if base.type.is_array:
+            return E(f"({base.code}).get({self._array_index(node.slice)})", array_parts(base.type)[0])
         if not base.type.is_vec:
             self.err(f"a {base.type} can't be indexed", node)
         k = self._const_int(node.slice, "a vector index", 0, base.type.ncomp - 1)
@@ -510,7 +549,53 @@ class Compiler:
         return E(f"{t.cpp}({', '.join(parts)})", t, c)
 
     expr_Tuple = _sequence
-    expr_List = _sequence
+
+    def expr_List(self, node, expect):
+        """A list literal is a fixed-size array, except where a vector is expected (so
+        `@position = [0, 0, 1]` keeps working)."""
+        if expect is not None and expect.is_vec and len(node.elts) == expect.ncomp:
+            return self._sequence(node, expect)
+        if not node.elts:
+            self.err("an empty list has no size: create a list with [value] * count", node)
+        if len(node.elts) > ARRAY_MAX:
+            self.err(f"lists can hold at most {ARRAY_MAX} values", node)
+        want = array_parts(expect)[0] if expect is not None and expect.is_array else None
+        es = [self.expr(el, want) for el in node.elts]
+        t = want or self._list_element_type(es, node)
+        parts = [self.coerce(e, t, el, "list value") for e, el in zip(es, node.elts)]
+        at = array_type(t, len(es))
+        return E(f"{at.cpp}{{{{{', '.join(parts)}}}}}", at)
+
+    def _list_element_type(self, es, node):
+        nums = (FLOAT, INT, BOOL)
+        if all(e.type in nums for e in es):
+            if any(e.type == FLOAT for e in es):
+                return FLOAT
+            return INT if any(e.type == INT for e in es) else BOOL
+        t = es[0].type
+        if t not in ARRAY_ELEMENTS:
+            self.err(f"a list can't hold a {t}", node)
+        for e in es:
+            if e.type != t:
+                self.err(f"all values of a list must have the same type, got {t} and {e.type}", node)
+        return t
+
+    def _list_fill(self, node, value_node, count_node, expect):
+        """[value] * count: a list of `count` copies of `value`."""
+        want = array_parts(expect)[0] if expect is not None and expect.is_array else None
+        e = self.expr(value_node, want)
+        t = want or e.type
+        if t not in ARRAY_ELEMENTS:
+            self.err(f"a list can't hold a {e.type}", node)
+        n = self._const_int(count_node, "the size of a list ([value] * count)", 1, ARRAY_MAX)
+        at = array_type(t, n)
+        return E(f"{at.cpp}::filled({self.coerce(e, t, value_node, 'list value')})", at)
+
+    def _array_index(self, node):
+        e = self.expr(node)
+        if e.type not in (INT, BOOL):
+            self.err(f"a list index must be an int, got {e.type}", node)
+        return self.coerce(e, INT, node)
 
     def expr_UnaryOp(self, node, expect):
         if isinstance(node.op, ast.Not):
@@ -545,14 +630,28 @@ class Compiler:
         if isinstance(node.op, ast.MatMult):
             self.err("'@' matrix multiplication is not supported", node)
         op = BINOPS.get(type(node.op))
+        if isinstance(node.op, ast.Mult):
+            for lst, count in ((node.left, node.right), (node.right, node.left)):
+                if isinstance(lst, ast.List) and len(lst.elts) == 1:
+                    return self._list_fill(node, lst.elts[0], count, expect)
         l = self.expr(node.left, expect)
         r = self.expr(node.right, expect)
         return self.binop(op, l, r, node)
 
     def binop(self, op, l, r, node):
         for e in (l, r):
-            if e.type in (POINTREF, NONE):
+            if e.type in (POINTREF, NONE) or e.type.is_array or e.type in RECORDS:
                 self.err(f"'{op}' can't be used with a {e.type}", node)
+        if l.type in (QUAT, MAT4) or r.type in (QUAT, MAT4):
+            if op == "*" and l.type == r.type:
+                return E(f"({l.code} * {r.code})", l.type)
+            if l.type == MAT4 and r.type == VEC3:
+                self.err("use transform_point(m, p) or transform_direction(m, d) to transform "
+                         "a vector by a mat4", node)  # fmt: skip
+            if l.type == QUAT and r.type == VEC3:
+                self.err("use rotate(q, v) to rotate a vector by a quat", node)
+            self.err(f"'{op}' between {l.type} and {r.type} is not supported (a quat or mat4 "
+                     "can only be multiplied by another of its kind)", node)  # fmt: skip
         if l.type.is_vec or r.type.is_vec:
             if op in ("&", "|", "^", "<<", ">>"):
                 self.err(f"'{op}' is not defined for vectors", node)
@@ -652,6 +751,13 @@ class Compiler:
                 self.err(f"'{name}' is a variable, not a function", node)
         elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == "math":
             return self._math_module_call(f.attr, node)
+        elif (isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name)
+              and f.value.id in self.locals):  # fmt: skip
+            t = self.locals[f.value.id].type
+            if t.is_array:
+                self.err(f"{f.value.id}.{f.attr}(): lists have a fixed size in Toast and no "
+                         "methods; create them with [value] * count", node)  # fmt: skip
+            self.err(f"a {t} has no method .{f.attr}()", node)
         elif isinstance(f, ast.Attribute) and self._dotted(f.value) is not None:
             prefix = self._dotted(f.value)
             module = self.modules[self.cur_module]["aliases"].get(prefix)
@@ -667,7 +773,7 @@ class Compiler:
             return self._call_helper(self.defs[name], node)
         if name in OLD_FUNCTIONS:
             self.err(f"{name}() is now {OLD_FUNCTIONS[name]}()", node)
-        if name in ("range", "nearby_points", "face_points", "point_faces", "point_neighbors"):
+        if name in LOOP_FUNCTIONS:
             self.err(f"{name}() can only be used as the iterable of a for loop", node)
         handler = getattr(self, f"call_{name}", None)
         if handler is None:
@@ -826,6 +932,10 @@ class Compiler:
         return E(f"toast::distance({a.code}, {b.code})", FLOAT)
 
     def call_normalize(self, node, expect):
+        if len(node.args) == 1 and not node.keywords:
+            e = self.expr(node.args[0])
+            if e.type == QUAT:
+                return E(f"toast::normalize({e.code})", QUAT)
         (a,) = self._vec_args(node, "normalize", 1)
         return E(f"toast::normalize({a.code})", a.type)
 
@@ -937,7 +1047,142 @@ class Compiler:
         cb = self.coerce(eb, INT, b, "random() seed")
         return E(f"toast::random({ca}, {cb})", FLOAT)
 
+    def call_curl_noise(self, node, expect):
+        (a,) = self._args(node, "curl_noise", 1)
+        p = self.coerce(self.expr(a, VEC3), VEC3, a, "curl_noise() position")
+        return E(f"toast::curl_noise({p})", VEC3)
+
+    def call_len(self, node, expect):
+        (a,) = self._args(node, "len", 1)
+        e = self.expr(a)
+        if e.type.is_array:
+            n = array_parts(e.type)[1]
+            return E(str(n), INT, n)
+        if e.type.is_vec:
+            return E(str(e.type.ncomp), INT, e.type.ncomp)
+        self.err(f"len() of a {e.type} is not supported", node)
+
+    # ---- rotations and matrices
+
+    def _typed(self, node, t, what):
+        e = self.expr(node, t)
+        if t == FLOAT:
+            return self.coerce(e, FLOAT, node, what)
+        if e.type != t:
+            self.err(f"{what}: expected a {t}, got {e.type}", node)
+        return e.code
+
+    def call_quat(self, node, expect):
+        args = self._args(node, "quat", 0, 4)
+        if not args:
+            return E("toast::quat()", QUAT)
+        if len(args) != 4:
+            self.err("quat() takes no arguments (no rotation) or 4 numbers w, x, y, z; see "
+                     "quat_axis_angle() and quat_euler()", node)  # fmt: skip
+        parts = [self._typed(a, FLOAT, "quat() component") for a in args]
+        return E(f"toast::quat({', '.join(parts)})", QUAT)
+
+    def call_mat4(self, node, expect):
+        self._args(node, "mat4", 0)
+        return E("toast::float4x4()", MAT4)
+
+    def call_quat_axis_angle(self, node, expect):
+        a, b = self._args(node, "quat_axis_angle", 2)
+        axis = self._typed(a, VEC3, "quat_axis_angle() axis")
+        angle = self._typed(b, FLOAT, "quat_axis_angle() angle")
+        return E(f"toast::quat_axis_angle({axis}, {angle})", QUAT)
+
+    def call_quat_euler(self, node, expect):
+        (a,) = self._args(node, "quat_euler", 1)
+        return E(f"toast::quat_euler({self._typed(a, VEC3, 'quat_euler() angles')})", QUAT)
+
+    def call_quat_between(self, node, expect):
+        a, b = self._args(node, "quat_between", 2)
+        va = self._typed(a, VEC3, "quat_between() from")
+        vb = self._typed(b, VEC3, "quat_between() to")
+        return E(f"toast::quat_between({va}, {vb})", QUAT)
+
+    def call_rotate(self, node, expect):
+        a, b = self._args(node, "rotate", 2)
+        q = self._typed(a, QUAT, "rotate() rotation")
+        v = self._typed(b, VEC3, "rotate() vector")
+        return E(f"toast::rotate({q}, {v})", VEC3)
+
+    def call_slerp(self, node, expect):
+        a, b, t = self._args(node, "slerp", 3)
+        qa = self._typed(a, QUAT, "slerp() a")
+        qb = self._typed(b, QUAT, "slerp() b")
+        return E(f"toast::slerp({qa}, {qb}, {self._typed(t, FLOAT, 'slerp() amount')})", QUAT)
+
+    def call_inverse(self, node, expect):
+        (a,) = self._args(node, "inverse", 1)
+        e = self.expr(a)
+        if e.type not in (QUAT, MAT4):
+            self.err(f"inverse() needs a quat or mat4, got {e.type}", node)
+        return E(f"toast::inverse({e.code})", e.type)
+
+    def call_to_euler(self, node, expect):
+        (a,) = self._args(node, "to_euler", 1)
+        return E(f"toast::to_euler({self._typed(a, QUAT, 'to_euler() rotation')})", VEC3)
+
+    def call_transpose(self, node, expect):
+        (a,) = self._args(node, "transpose", 1)
+        return E(f"toast::transpose({self._typed(a, MAT4, 'transpose() matrix')})", MAT4)
+
+    def call_transform_point(self, node, expect):
+        a, b = self._args(node, "transform_point", 2)
+        m = self._typed(a, MAT4, "transform_point() matrix")
+        return E(f"toast::transform_point({m}, {self._typed(b, VEC3, 'transform_point() point')})",
+                 VEC3)  # fmt: skip
+
+    def call_transform_direction(self, node, expect):
+        a, b = self._args(node, "transform_direction", 2)
+        m = self._typed(a, MAT4, "transform_direction() matrix")
+        d = self._typed(b, VEC3, "transform_direction() direction")
+        return E(f"toast::transform_direction({m}, {d})", VEC3)
+
+    def call_mat4_translation(self, node, expect):
+        (a,) = self._args(node, "mat4_translation", 1)
+        return E(f"toast::mat4_translation({self._typed(a, VEC3, 'mat4_translation()')})", MAT4)
+
+    def call_mat4_rotation(self, node, expect):
+        (a,) = self._args(node, "mat4_rotation", 1)
+        return E(f"toast::mat4_rotation({self._typed(a, QUAT, 'mat4_rotation()')})", MAT4)
+
+    def _scale_arg(self, node, what):
+        e = self.expr(node, VEC3)
+        if e.type in (FLOAT, INT, BOOL):
+            return f"toast::float3({self.coerce(e, FLOAT, node)})"
+        if e.type != VEC3:
+            self.err(f"{what}: expected a number or vec3, got {e.type}", node)
+        return e.code
+
+    def call_mat4_scale(self, node, expect):
+        (a,) = self._args(node, "mat4_scale", 1)
+        return E(f"toast::mat4_scale({self._scale_arg(a, 'mat4_scale()')})", MAT4)
+
+    def call_mat4_compose(self, node, expect):
+        a, b, c = self._args(node, "mat4_compose", 3)
+        loc = self._typed(a, VEC3, "mat4_compose() location")
+        rot = self._typed(b, QUAT, "mat4_compose() rotation")
+        scale = self._scale_arg(c, "mat4_compose() scale")
+        return E(f"toast::mat4_compose({loc}, {rot}, {scale})", MAT4)
+
     # ---- parameters, attributes, host
+
+    def _check_domain(self, fname, inp, domain, node):
+        """Input 0 is the geometry being run on: some domains don't exist in some modes."""
+        if inp != 0 or domain in INPUT0_DOMAINS[self.run_over]:
+            return
+        if self.run_over == "instances":
+            self.err(f"{fname}(): with Run Over Instances, input 0 has only instances (use "
+                     "@attributes or instance_attr())", node)  # fmt: skip
+        self.err(f"{fname}(): with Run Over {self.run_over.capitalize()}, input 0 has no "
+                 f"{DOMAIN_WORD[domain]}", node)  # fmt: skip
+
+    def _check_mode(self, fname, modes, node, hint=""):
+        if self.run_over not in modes:
+            self.err(f"{fname}() doesn't work with Run Over {self.run_over.capitalize()}{hint}", node)
 
     def call_param(self, node, expect):
         args = self._args(node, "param", 2, kw=("min", "max"))
@@ -977,6 +1222,7 @@ class Compiler:
             )
         a_inp, a_name, a_j = self._args(node, fname, 3)
         inp = self._input_arg(a_inp, fname)
+        self._check_domain(fname, inp, domain, node)
         name = self._const_str(a_name, f"{fname}(): the attribute name")
         if not IDENT_RE.match(name):
             self.err(f"{fname}(): '{name}' is not a valid attribute name", node)
@@ -1001,6 +1247,38 @@ class Compiler:
     def call_face_attr(self, node, expect):
         return self._element_read("face_attr", "face", node, expect)
 
+    def call_curve_attr(self, node, expect):
+        return self._element_read("curve_attr", "curve", node, expect)
+
+    def call_instance_attr(self, node, expect):
+        return self._element_read("instance_attr", "instance", node, expect)
+
+    def call_curve_count(self, node, expect):
+        (a,) = self._args(node, "curve_count", 1)
+        inp = self._input_arg(a, "curve_count")
+        self._check_domain("curve_count", inp, "curve", node)
+        self.host_uses.add("ncurves")
+        self.inputs_used.add(inp)
+        return E(f"toast::ncurves(c, {inp})", INT)
+
+    def call_remove_curve(self, node, expect):
+        (a,) = self._args(node, "remove_curve", 1)
+        self._check_mode("remove_curve", ("points", "curves"), node)
+        e = self.expr(a)
+        if e.type != INT:
+            self.err(f"remove_curve() needs a curve number, got {e.type}", a)
+        self.uses_cmd = True
+        return E(f"toast::remove_curve(c, i, {e.code})", NONE)
+
+    def call_remove_instance(self, node, expect):
+        (a,) = self._args(node, "remove_instance", 1)
+        self._check_mode("remove_instance", ("instances",), node)
+        e = self.expr(a)
+        if e.type != INT:
+            self.err(f"remove_instance() needs an instance number, got {e.type}", a)
+        self.uses_cmd = True
+        return E(f"toast::remove_point(c, i, {e.code})", NONE)
+
     def call_face_count(self, node, expect):
         (a,) = self._args(node, "face_count", 1)
         inp = self._input_arg(a, "face_count")
@@ -1010,6 +1288,7 @@ class Compiler:
 
     def call_remove_face(self, node, expect):
         (a,) = self._args(node, "remove_face", 1)
+        self._check_domain("remove_face", 0, "face", node)
         e = self.expr(a)
         if e.type != INT:
             self.err(f"remove_face() needs a face number, got {e.type}", a)
@@ -1049,6 +1328,7 @@ class Compiler:
 
     def _set_attr(self, fname, domain, node):
         a_j, a_name, a_value = self._args(node, fname, 3)
+        self._check_domain(fname, 0, domain, node)
         name = self._const_str(a_name, f"{fname}(): the attribute name")
         if not IDENT_RE.match(name):
             self.err(f"{fname}(): '{name}' is not a valid attribute name", node)
@@ -1127,6 +1407,8 @@ class Compiler:
 
     def call_add_point(self, node, expect):
         (a,) = self._args(node, "add_point", 1)
+        self._check_mode("add_point", ("points", "faces", "edges", "corners", "geometry"), node,
+                         ": points can only be added to meshes and point clouds")  # fmt: skip
         pos = self.coerce(self.expr(a, VEC3), VEC3, a, "add_point() position")
         self.uses_cmd = True
         return E(f"toast::add_point(c, i, {pos})", POINTREF)
@@ -1142,6 +1424,7 @@ class Compiler:
 
     def call_add_face(self, node, expect):
         (a,) = self._args(node, "add_face", 1)
+        self._check_domain("add_face", 0, "face", node)
         if not isinstance(a, (ast.Tuple, ast.List)) or len(a.elts) < 3:
             if isinstance(a, (ast.Tuple, ast.List)) and len(a.elts) == 2:
                 self.err("add_face() needs 3 or more points; use add_edge(a, b) for 2", node)
@@ -1152,12 +1435,15 @@ class Compiler:
 
     def call_add_edge(self, node, expect):
         args = self._args(node, "add_edge", 2)
+        self._check_domain("add_edge", 0, "edge", node)
         pts = self._point_refs("add_edge", args)
         self.uses_cmd = True
         return E(f"toast::add_prim(c, i, {', '.join(pts)})", NONE)
 
     def call_remove_point(self, node, expect):
         (a,) = self._args(node, "remove_point", 1)
+        if self.run_over == "instances":
+            self.err("remove_point(): with Run Over Instances, use remove_instance()", node)
         e = self.expr(a)
         if e.type not in (INT, POINTREF):
             self.err(f"remove_point() needs a point number, got {e.type}", a)
@@ -1433,9 +1719,23 @@ class Compiler:
                 base = self.attr_ref(base_node, write=True, read=True)
             elif isinstance(base_node, ast.Name) and base_node.id in self.locals:
                 base = E(f"v_{base_node.id}", self.locals[base_node.id].type)
+            elif isinstance(base_node, ast.Subscript):
+                self.err("assign a whole list value, like a[i] = v, not one component of it "
+                         "(copy it to a variable, change that, and assign it back)", node)  # fmt: skip
             else:
                 self.err("only components of variables and attributes can be assigned", node)
+            if isinstance(target, ast.Subscript) and base.type.is_array:
+                if not isinstance(base_node, ast.Name):
+                    self.err("only lists in variables can be changed", node)
+                elem = array_parts(base.type)[0]
+                idx = self._array_index(target.slice)
+                cur = E(f"{base.code}.get({idx})", elem)
+                val = value_for(cur, elem)
+                self.line(f"{base.code}.at({idx}) = {self.coerce(val, elem, node)};")
+                return
             if isinstance(target, ast.Attribute):
+                if base.type in PROPERTIES:
+                    self.err(f"the properties of a {base.type} are read-only", node)
                 comp = self._swizzle(base, target.attr, node)
                 if comp.type != FLOAT:
                     self.err("only one component can be assigned at a time, like v.x = 1", node)
@@ -1469,10 +1769,24 @@ class Compiler:
         if not isinstance(s.target, ast.Name):
             self.err("annotations are only supported on variables and @attributes", s)
         ann = s.annotation
-        if not (isinstance(ann, ast.Name) and ann.id in BY_NAME):
-            self.err(f"unknown type annotation (use one of {', '.join(BY_NAME)})", s)
-        t = BY_NAME[ann.id]
         name = s.target.id
+        if (isinstance(ann, ast.Subscript) and isinstance(ann.value, ast.Name)
+                and ann.value.id == "list"):  # fmt: skip
+            elem = ann.slice
+            if not (isinstance(elem, ast.Name) and elem.id in BY_NAME):
+                self.err(f"list[...]: unknown element type (use one of {', '.join(BY_NAME)})", s)
+            if s.value is None:
+                self.err(f"'{name}: list[{elem.id}]' needs a value to give it a size, like "
+                         f"[0] * 8", s)  # fmt: skip
+            hint = array_type(BY_NAME[elem.id], 1)
+            value = self.expr(s.value, hint)
+            if not value.type.is_array or array_parts(value.type)[0] != BY_NAME[elem.id]:
+                self.err(f"'{name}' is annotated list[{elem.id}], got a {value.type}", s)
+            self._assign_local(name, value, s)
+            return
+        if not (isinstance(ann, ast.Name) and ann.id in BY_NAME):
+            self.err(f"unknown type annotation (use one of {', '.join(BY_NAME)}, list[...])", s)
+        t = BY_NAME[ann.id]
         loc = self.locals.get(name)
         if loc is not None and loc.type != t:
             self.err(f"'{name}' is already a {loc.type} (line {loc.line})", s)
@@ -1523,8 +1837,8 @@ class Compiler:
             self.err("for ... else is not supported", s)
         it = s.iter
         if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name)):
-            self.err("for loops support range(), nearby_points(), face_points(), point_faces() and "
-                     "point_neighbors() only", s)  # fmt: skip
+            self._for_list(s, it)
+            return
         if it.func.id == "range":
             self._for_range(s, it)
         elif it.func.id == "nearby_points":
@@ -1533,11 +1847,14 @@ class Compiler:
             self._for_primpoints(s, it)
         elif it.func.id in ("point_faces", "point_neighbors"):
             self._for_point_query(s, it)
+        elif it.func.id == "curve_points":
+            self._for_curve_points(s, it)
         elif it.func.id in OLD_FUNCTIONS:
             self.err(f"{it.func.id}() is now {OLD_FUNCTIONS[it.func.id]}()", s)
+        elif it.func.id in self.defs or it.func.id in BUILTINS:
+            self._for_list(s, it)
         else:
-            self.err("for loops support range(), nearby_points(), face_points(), point_faces() and "
-                     "point_neighbors() only", s)  # fmt: skip
+            self.err(f"'{it.func.id}' is not a Toast builtin", s)
 
     def _for_range(self, s, it):
         args = self._args(it, "range", 1, 3)
@@ -1596,9 +1913,50 @@ class Compiler:
         self.depth -= 1
         self.line("}")
 
+    def _for_list(self, s, it):
+        """for x in <list>: x takes each value in order."""
+        e = self.expr(it)
+        if not e.type.is_array:
+            self.err("for loops go over a list, range(), nearby_points(), face_points(), "
+                     "curve_points(), point_faces() or point_neighbors()", s)  # fmt: skip
+        elem, n = array_parts(e.type)
+        if not isinstance(s.target, ast.Name):
+            self.err("the loop variable must be a plain name", s)
+        name = s.target.id
+        loc = self.locals.get(name)
+        if loc is None:
+            self._declare(name, elem, s)
+        elif loc.type != elem:
+            self.err(f"loop variable '{name}' is a {loc.type}, the list holds {elem}", s)
+        t = self.new_tmp()
+        self.line("{")
+        self.depth += 1
+        self.line(f"const {e.type.cpp} {t}_list = {e.code};")
+        self.line(f"for (int32_t {t} = 0; {t} < {n}; {t}++) {{")
+        self.depth += 1
+        self.line(f"v_{name} = {t}_list.v[{t}];")
+        self.loop_depth += 1
+        self.depth -= 1
+        self.block(s.body)
+        self.loop_depth -= 1
+        self.line("}")
+        self.depth -= 1
+        self.line("}")
+
+    def _for_curve_points(self, s, it):
+        a_inp, a_curve, a_max = self._args(it, "curve_points", 3)
+        inp = self._input_arg(a_inp, "curve_points")
+        self._check_domain("curve_points", inp, "curve", it)
+        curve = self.coerce(self.expr(a_curve), INT, a_curve, "curve_points() curve")
+        mx = self._const_int(a_max, "curve_points(): the maximum count", 1, NEARPOINTS_MAX_LIMIT)
+        self.host_uses.add("curve_points")
+        self.inputs_used.add(inp)
+        self._emit_index_loop(s, f"toast::curve_points(c, {inp}, {curve}, {mx}, {{buf}})", mx)
+
     def _for_primpoints(self, s, it):
         a_inp, a_prim, a_max = self._args(it, "face_points", 3)
         inp = self._input_arg(a_inp, "face_points")
+        self._check_domain("face_points", inp, "face", it)
         prim = self.coerce(self.expr(a_prim), INT, a_prim, "face_points() face")
         mx = self._const_int(a_max, "face_points(): the maximum count", 1, NEARPOINTS_MAX_LIMIT)
         self.host_uses.add("primpoints")

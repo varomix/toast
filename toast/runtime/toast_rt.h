@@ -31,7 +31,7 @@ typedef __SIZE_TYPE__ size_t;
 #  define offsetof(type, member) __builtin_offsetof(type, member)
 #endif
 
-#define TOAST_ABI_VERSION 4
+#define TOAST_ABI_VERSION 5
 
 #if defined(_WIN32)
 #  define TOAST_EXPORT extern "C" __declspec(dllexport)
@@ -54,6 +54,8 @@ enum {
   TOAST_TYPE_FLOAT2 = 3,
   TOAST_TYPE_FLOAT3 = 4,
   TOAST_TYPE_FLOAT4 = 5,
+  TOAST_TYPE_QUAT = 6,   /* w, x, y, z: Blender's Quaternion. */
+  TOAST_TYPE_MAT4 = 7,   /* 16 floats, column-major: Blender's float4x4. */
 };
 
 /* ToastAttr.domain */
@@ -62,6 +64,8 @@ enum {
   TOAST_DOMAIN_FACE = 1,
   TOAST_DOMAIN_EDGE = 2,
   TOAST_DOMAIN_CORNER = 3,
+  TOAST_DOMAIN_CURVE = 4,
+  TOAST_DOMAIN_INSTANCE = 5,
 };
 
 /* Result of a surface query (ray cast or closest point) on a mesh's triangles. */
@@ -101,6 +105,9 @@ typedef struct ToastAttr {
  *   (a writable binding). Applied after the run in (src, emission order), before topology.
  * - ray_cast / closest_point: query the triangles of `input`'s mesh (as it was before the run).
  *   ray_cast normalizes `dir`; both ignore results farther than `max_dist`. Return out->hit.
+ * - ncurves / curve_points: curve count of `input`'s curves, and the points of a curve in order
+ *   (like primpoints).
+ * - cmd_remove_curve: queues removing a curve with its points (curves only).
  * Commands are merged sorted by (src, emission order), so results don't depend on threads. */
 typedef struct ToastHost {
   void *self;
@@ -131,6 +138,10 @@ typedef struct ToastHost {
                       ToastHit *out);
   int32_t (*closest_point)(
       void *self, int32_t input, const float *pos, float max_dist, ToastHit *out);
+  /* ABI 5. */
+  int64_t (*ncurves)(void *self, int32_t input);
+  int32_t (*curve_points)(void *self, int32_t input, int64_t curve, int32_t max, int64_t *out);
+  void (*cmd_remove_curve)(void *self, ToastCmdBuffer *cmd, int64_t src, int64_t curve);
 } ToastHost;
 
 typedef struct ToastCtx {
@@ -584,6 +595,20 @@ inline int32_t primpoints(const ToastCtx *c, int32_t input, int64_t prim, int32_
 inline void remove_prim(const ToastCtx *c, int64_t src, int64_t prim)
 {
   c->host->cmd_remove_prim(c->host->self, c->cmd, src, prim);
+}
+inline int32_t ncurves(const ToastCtx *c, int32_t input)
+{
+  return int32_t(c->host->ncurves(c->host->self, input));
+}
+inline int32_t curve_points(
+    const ToastCtx *c, int32_t input, int64_t curve, int32_t max, int64_t *out)
+{
+  const int32_t n = c->host->curve_points(c->host->self, input, curve, max, out);
+  return n < max ? n : max;
+}
+inline void remove_curve(const ToastCtx *c, int64_t src, int64_t curve)
+{
+  c->host->cmd_remove_curve(c->host->self, c->cmd, src, curve);
 }
 inline int32_t point_faces(const ToastCtx *c, int32_t input, int64_t pt, int32_t max, int64_t *out)
 {
@@ -1242,5 +1267,464 @@ inline float rand(float4 x)
 {
   return hash_float_to_float(x);
 }
+
+/* curl_noise(p): curl of a field of three signed noises, a divergence-free (swirling) vector
+ * field for flow-like motion. Central differences; Blender has no node for it. */
+inline float3 curl_potential(float3 q)
+{
+  return float3(snoise(q),
+                snoise(q + float3(31.416f, -47.853f, 12.679f)),
+                snoise(q + float3(-233.145f, -113.408f, -185.31f)));
+}
+inline float3 curl_noise(float3 p)
+{
+  const float e = 1e-3f;
+  const float3 dx = (curl_potential(p + float3(e, 0.0f, 0.0f)) -
+                     curl_potential(p - float3(e, 0.0f, 0.0f))) / (2.0f * e);
+  const float3 dy = (curl_potential(p + float3(0.0f, e, 0.0f)) -
+                     curl_potential(p - float3(0.0f, e, 0.0f))) / (2.0f * e);
+  const float3 dz = (curl_potential(p + float3(0.0f, 0.0f, e)) -
+                     curl_potential(p - float3(0.0f, 0.0f, e))) / (2.0f * e);
+  return float3(dy.z - dz.y, dz.x - dx.z, dx.y - dy.x);
+}
+
+/* -------------------------------------------------------------------- */
+/* Rotations and matrices. Same layout and conventions as Blender: math::Quaternion is
+ * (w, x, y, z), float4x4 is column-major (columns: x axis, y axis, z axis, location). The
+ * formulas follow Blender's math_rotation.c, so results match its nodes closely (not bit for bit
+ * in every case). */
+
+struct quat {
+  float w = 1.0f, x = 0.0f, y = 0.0f, z = 0.0f;
+  quat() = default;
+  constexpr quat(float w_, float x_, float y_, float z_) : w(w_), x(x_), y(y_), z(z_) {}
+};
+static_assert(sizeof(quat) == 16, "quat must be packed");
+
+inline quat operator*(const quat &a, const quat &b)
+{
+  return quat(a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+              a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+              a.w * b.y + a.y * b.w + a.z * b.x - a.x * b.z,
+              a.w * b.z + a.z * b.w + a.x * b.y - a.y * b.x);
+}
+inline quat &operator*=(quat &a, const quat &b)
+{
+  return a = a * b;
+}
+inline float dot(const quat &a, const quat &b)
+{
+  return a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z;
+}
+inline quat normalize(const quat &q)
+{
+  const float len = __builtin_sqrtf(dot(q, q));
+  if (!(len > 0.0f)) {
+    return quat();
+  }
+  return quat(q.w / len, q.x / len, q.y / len, q.z / len);
+}
+inline quat inverse(const quat &q)
+{
+  const float d = dot(q, q);
+  if (!(d > 0.0f)) {
+    return quat();
+  }
+  return quat(q.w / d, -q.x / d, -q.y / d, -q.z / d);
+}
+inline quat quat_axis_angle(float3 axis, float angle)
+{
+  const float len = __builtin_sqrtf(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+  if (!(len > 0.0f)) {
+    return quat();
+  }
+  const float s = __builtin_sinf(angle * 0.5f) / len;
+  return quat(__builtin_cosf(angle * 0.5f), axis.x * s, axis.y * s, axis.z * s);
+}
+/* Euler XYZ (radians), as Blender's eul_to_quat. */
+inline quat quat_euler(float3 e)
+{
+  const float ti = e.x * 0.5f, tj = e.y * 0.5f, th = e.z * 0.5f;
+  const float ci = __builtin_cosf(ti), cj = __builtin_cosf(tj), ch = __builtin_cosf(th);
+  const float si = __builtin_sinf(ti), sj = __builtin_sinf(tj), sh = __builtin_sinf(th);
+  const float cc = ci * ch, cs = ci * sh, sc = si * ch, ss = si * sh;
+  return quat(cj * cc + sj * ss, cj * sc - sj * cs, cj * ss + sj * cc, cj * cs - sj * sc);
+}
+/* Rotate a vector by a (normalized) quaternion. */
+inline float3 rotate(const quat &q, const float3 &v)
+{
+  const float3 u(q.x, q.y, q.z);
+  const float3 t = float3(u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z, u.x * v.y - u.y * v.x) * 2.0f;
+  const float3 c(u.y * t.z - u.z * t.y, u.z * t.x - u.x * t.z, u.x * t.y - u.y * t.x);
+  return v + t * q.w + c;
+}
+/* Spherical interpolation along the shortest path, as Blender's interp_qt_qtqt. */
+inline quat slerp(const quat &a, quat b, float t)
+{
+  float cosom = dot(a, b);
+  if (cosom < 0.0f) {
+    cosom = -cosom;
+    b = quat(-b.w, -b.x, -b.y, -b.z);
+  }
+  float w0, w1;
+  if ((1.0f - cosom) > 0.0001f) {
+    const float omega = __builtin_acosf(cosom);
+    const float sinom = __builtin_sinf(omega);
+    w0 = __builtin_sinf((1.0f - t) * omega) / sinom;
+    w1 = __builtin_sinf(t * omega) / sinom;
+  }
+  else {
+    w0 = 1.0f - t;
+    w1 = t;
+  }
+  return quat(a.w * w0 + b.w * w1, a.x * w0 + b.x * w1, a.y * w0 + b.y * w1, a.z * w0 + b.z * w1);
+}
+/* The smallest rotation turning direction `a` into direction `b`. */
+inline quat quat_between(float3 a, float3 b)
+{
+  const float la = __builtin_sqrtf(a.x * a.x + a.y * a.y + a.z * a.z);
+  const float lb = __builtin_sqrtf(b.x * b.x + b.y * b.y + b.z * b.z);
+  if (!(la > 0.0f) || !(lb > 0.0f)) {
+    return quat();
+  }
+  a = a / la;
+  b = b / lb;
+  float d = a.x * b.x + a.y * b.y + a.z * b.z;
+  d = d < -1.0f ? -1.0f : (d > 1.0f ? 1.0f : d);
+  float3 axis(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+  const float len = __builtin_sqrtf(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+  if (len < 1e-6f) {
+    if (d > 0.0f) {
+      return quat();
+    }
+    /* Opposite: half a turn around any axis perpendicular to `a`. */
+    axis = __builtin_fabsf(a.x) < 0.9f ? float3(0.0f, -a.z, a.y) : float3(a.z, 0.0f, -a.x);
+  }
+  return quat_axis_angle(axis, __builtin_acosf(d));
+}
+
+struct float4x4 {
+  float m[4][4]; /* m[column][row] */
+  float4x4()
+  {
+    for (int c = 0; c < 4; c++) {
+      for (int r = 0; r < 4; r++) {
+        m[c][r] = c == r ? 1.0f : 0.0f;
+      }
+    }
+  }
+};
+static_assert(sizeof(float4x4) == 64, "float4x4 must be packed");
+
+namespace detail {
+/* Rotation matrix of a quaternion, as Blender's quat_to_mat3 (out[column][row]). */
+inline void quat_to_mat3(const quat &q, float out[3][3])
+{
+  const double sqrt2 = 1.41421356237309504880;
+  const float q0 = float(sqrt2 * q.w), q1 = float(sqrt2 * q.x), q2 = float(sqrt2 * q.y),
+              q3 = float(sqrt2 * q.z);
+  const float qda = q0 * q1, qdb = q0 * q2, qdc = q0 * q3;
+  const float qaa = q1 * q1, qab = q1 * q2, qac = q1 * q3;
+  const float qbb = q2 * q2, qbc = q2 * q3, qcc = q3 * q3;
+  out[0][0] = 1.0f - qbb - qcc;
+  out[0][1] = qdc + qab;
+  out[0][2] = -qdb + qac;
+  out[1][0] = -qdc + qab;
+  out[1][1] = 1.0f - qaa - qcc;
+  out[1][2] = qda + qbc;
+  out[2][0] = qdb + qac;
+  out[2][1] = -qda + qbc;
+  out[2][2] = 1.0f - qaa - qbb;
+}
+/* Quaternion of an orthonormal rotation matrix, as Blender's mat3_normalized_to_quat_fast. */
+inline quat mat3_to_quat(const float mat[3][3])
+{
+  float q[4];
+  if (mat[2][2] < 0.0f) {
+    if (mat[0][0] > mat[1][1]) {
+      const float trace = 1.0f + mat[0][0] - mat[1][1] - mat[2][2];
+      float s = 2.0f * __builtin_sqrtf(trace);
+      if (mat[1][2] < mat[2][1]) {
+        s = -s;
+      }
+      q[1] = 0.25f * s;
+      s = 1.0f / s;
+      q[0] = (mat[1][2] - mat[2][1]) * s;
+      q[2] = (mat[0][1] + mat[1][0]) * s;
+      q[3] = (mat[2][0] + mat[0][2]) * s;
+      if (trace == 1.0f && q[0] == 0.0f && q[2] == 0.0f && q[3] == 0.0f) {
+        q[1] = 1.0f;
+      }
+    }
+    else {
+      const float trace = 1.0f - mat[0][0] + mat[1][1] - mat[2][2];
+      float s = 2.0f * __builtin_sqrtf(trace);
+      if (mat[2][0] < mat[0][2]) {
+        s = -s;
+      }
+      q[2] = 0.25f * s;
+      s = 1.0f / s;
+      q[0] = (mat[2][0] - mat[0][2]) * s;
+      q[1] = (mat[0][1] + mat[1][0]) * s;
+      q[3] = (mat[1][2] + mat[2][1]) * s;
+      if (trace == 1.0f && q[0] == 0.0f && q[1] == 0.0f && q[3] == 0.0f) {
+        q[2] = 1.0f;
+      }
+    }
+  }
+  else {
+    if (mat[0][0] < -mat[1][1]) {
+      const float trace = 1.0f - mat[0][0] - mat[1][1] + mat[2][2];
+      float s = 2.0f * __builtin_sqrtf(trace);
+      if (mat[0][1] < mat[1][0]) {
+        s = -s;
+      }
+      q[3] = 0.25f * s;
+      s = 1.0f / s;
+      q[0] = (mat[0][1] - mat[1][0]) * s;
+      q[1] = (mat[2][0] + mat[0][2]) * s;
+      q[2] = (mat[1][2] + mat[2][1]) * s;
+      if (trace == 1.0f && q[0] == 0.0f && q[1] == 0.0f && q[2] == 0.0f) {
+        q[3] = 1.0f;
+      }
+    }
+    else {
+      const float trace = 1.0f + mat[0][0] + mat[1][1] + mat[2][2];
+      float s = 2.0f * __builtin_sqrtf(trace);
+      q[0] = 0.25f * s;
+      s = 1.0f / s;
+      q[1] = (mat[1][2] - mat[2][1]) * s;
+      q[2] = (mat[2][0] - mat[0][2]) * s;
+      q[3] = (mat[0][1] - mat[1][0]) * s;
+      if (trace == 1.0f && q[1] == 0.0f && q[2] == 0.0f && q[3] == 0.0f) {
+        q[0] = 1.0f;
+      }
+    }
+  }
+  return normalize(quat(q[0], q[1], q[2], q[3]));
+}
+}  // namespace detail
+
+/* Euler XYZ (radians) of a rotation, as Blender's quat_to_eul (the smaller of two solutions). */
+inline float3 to_euler(const quat &q)
+{
+  float mat[3][3];
+  detail::quat_to_mat3(normalize(q), mat);
+  const float cy = __builtin_hypotf(mat[0][0], mat[0][1]);
+  float3 e1, e2;
+  if (cy > 16.0f * 1.192092896e-07f) {
+    e1 = float3(__builtin_atan2f(mat[1][2], mat[2][2]),
+                __builtin_atan2f(-mat[0][2], cy),
+                __builtin_atan2f(mat[0][1], mat[0][0]));
+    e2 = float3(__builtin_atan2f(-mat[1][2], -mat[2][2]),
+                __builtin_atan2f(-mat[0][2], -cy),
+                __builtin_atan2f(-mat[0][1], -mat[0][0]));
+  }
+  else {
+    e1 = float3(__builtin_atan2f(-mat[2][1], mat[1][1]), __builtin_atan2f(-mat[0][2], cy), 0.0f);
+    e2 = e1;
+  }
+  const float s1 = __builtin_fabsf(e1.x) + __builtin_fabsf(e1.y) + __builtin_fabsf(e1.z);
+  const float s2 = __builtin_fabsf(e2.x) + __builtin_fabsf(e2.y) + __builtin_fabsf(e2.z);
+  return s1 > s2 ? e2 : e1;
+}
+
+inline float4x4 operator*(const float4x4 &a, const float4x4 &b)
+{
+  float4x4 r;
+  for (int c = 0; c < 4; c++) {
+    for (int row = 0; row < 4; row++) {
+      float sum = 0.0f;
+      for (int k = 0; k < 4; k++) {
+        sum += a.m[k][row] * b.m[c][k];
+      }
+      r.m[c][row] = sum;
+    }
+  }
+  return r;
+}
+inline float4x4 &operator*=(float4x4 &a, const float4x4 &b)
+{
+  return a = a * b;
+}
+inline float3 transform_point(const float4x4 &m, const float3 &p)
+{
+  return float3(m.m[0][0] * p.x + m.m[1][0] * p.y + m.m[2][0] * p.z + m.m[3][0],
+                m.m[0][1] * p.x + m.m[1][1] * p.y + m.m[2][1] * p.z + m.m[3][1],
+                m.m[0][2] * p.x + m.m[1][2] * p.y + m.m[2][2] * p.z + m.m[3][2]);
+}
+inline float3 transform_direction(const float4x4 &m, const float3 &d)
+{
+  return float3(m.m[0][0] * d.x + m.m[1][0] * d.y + m.m[2][0] * d.z,
+                m.m[0][1] * d.x + m.m[1][1] * d.y + m.m[2][1] * d.z,
+                m.m[0][2] * d.x + m.m[1][2] * d.y + m.m[2][2] * d.z);
+}
+inline float4x4 mat4_translation(const float3 &v)
+{
+  float4x4 r;
+  r.m[3][0] = v.x;
+  r.m[3][1] = v.y;
+  r.m[3][2] = v.z;
+  return r;
+}
+inline float4x4 mat4_scale(const float3 &v)
+{
+  float4x4 r;
+  r.m[0][0] = v.x;
+  r.m[1][1] = v.y;
+  r.m[2][2] = v.z;
+  return r;
+}
+inline float4x4 mat4_compose(const float3 &location, const quat &rotation, const float3 &scale)
+{
+  float rot[3][3];
+  detail::quat_to_mat3(rotation, rot);
+  float4x4 r;
+  const float s[3] = {scale.x, scale.y, scale.z};
+  for (int c = 0; c < 3; c++) {
+    for (int row = 0; row < 3; row++) {
+      r.m[c][row] = rot[c][row] * s[c];
+    }
+  }
+  r.m[3][0] = location.x;
+  r.m[3][1] = location.y;
+  r.m[3][2] = location.z;
+  return r;
+}
+inline float4x4 mat4_rotation(const quat &q)
+{
+  return mat4_compose(float3(0.0f), q, float3(1.0f));
+}
+inline float4x4 transpose(const float4x4 &a)
+{
+  float4x4 r;
+  for (int c = 0; c < 4; c++) {
+    for (int row = 0; row < 4; row++) {
+      r.m[c][row] = a.m[row][c];
+    }
+  }
+  return r;
+}
+/* Inverse by Gauss-Jordan elimination with partial pivoting. A matrix that can't be inverted
+ * gives a zero matrix, as Blender's Invert Matrix node. */
+inline float4x4 inverse(const float4x4 &a)
+{
+  float w[4][8];
+  for (int row = 0; row < 4; row++) {
+    for (int c = 0; c < 4; c++) {
+      w[row][c] = a.m[c][row];
+      w[row][c + 4] = row == c ? 1.0f : 0.0f;
+    }
+  }
+  for (int col = 0; col < 4; col++) {
+    int pivot = col;
+    for (int row = col + 1; row < 4; row++) {
+      if (__builtin_fabsf(w[row][col]) > __builtin_fabsf(w[pivot][col])) {
+        pivot = row;
+      }
+    }
+    if (!(__builtin_fabsf(w[pivot][col]) > 1e-30f)) {
+      float4x4 zero;
+      for (int c = 0; c < 4; c++) {
+        for (int row = 0; row < 4; row++) {
+          zero.m[c][row] = 0.0f;
+        }
+      }
+      return zero;
+    }
+    if (pivot != col) {
+      for (int k = 0; k < 8; k++) {
+        const float t = w[col][k];
+        w[col][k] = w[pivot][k];
+        w[pivot][k] = t;
+      }
+    }
+    const float inv = 1.0f / w[col][col];
+    for (int k = 0; k < 8; k++) {
+      w[col][k] *= inv;
+    }
+    for (int row = 0; row < 4; row++) {
+      if (row != col) {
+        const float f = w[row][col];
+        for (int k = 0; k < 8; k++) {
+          w[row][k] -= f * w[col][k];
+        }
+      }
+    }
+  }
+  float4x4 r;
+  for (int row = 0; row < 4; row++) {
+    for (int c = 0; c < 4; c++) {
+      r.m[c][row] = w[row][c + 4];
+    }
+  }
+  return r;
+}
+inline float3 mat_translation(const float4x4 &m)
+{
+  return float3(m.m[3][0], m.m[3][1], m.m[3][2]);
+}
+inline float3 mat_scale(const float4x4 &m)
+{
+  float3 r;
+  for (int c = 0; c < 3; c++) {
+    r[c] = __builtin_sqrtf(m.m[c][0] * m.m[c][0] + m.m[c][1] * m.m[c][1] + m.m[c][2] * m.m[c][2]);
+  }
+  return r;
+}
+/* The rotation of a matrix with scale removed (a mirrored matrix is flipped first). */
+inline quat mat_rotation(const float4x4 &m)
+{
+  float n[3][3];
+  for (int c = 0; c < 3; c++) {
+    const float len = __builtin_sqrtf(m.m[c][0] * m.m[c][0] + m.m[c][1] * m.m[c][1] +
+                                      m.m[c][2] * m.m[c][2]);
+    for (int row = 0; row < 3; row++) {
+      n[c][row] = len > 0.0f ? m.m[c][row] / len : 0.0f;
+    }
+  }
+  const float det = n[0][0] * (n[1][1] * n[2][2] - n[2][1] * n[1][2]) -
+                    n[1][0] * (n[0][1] * n[2][2] - n[2][1] * n[0][2]) +
+                    n[2][0] * (n[0][1] * n[1][2] - n[1][1] * n[0][2]);
+  if (det < 0.0f) {
+    for (int c = 0; c < 3; c++) {
+      for (int row = 0; row < 3; row++) {
+        n[c][row] = -n[c][row];
+      }
+    }
+  }
+  return detail::mat3_to_quat(n);
+}
+
+/* -------------------------------------------------------------------- */
+/* Fixed-size arrays (Toast lists). Values, like vectors: assigning copies. Indices wrap once
+ * from the end like Python (-1 is the last); other out-of-range reads give zero and writes are
+ * dropped, so a bad index never crashes Blender. */
+
+template<typename T, int N> struct Array {
+  T v[N + 1]; /* v[N] absorbs out-of-range writes. */
+  static Array filled(const T &x)
+  {
+    Array a;
+    for (int k = 0; k < N; k++) {
+      a.v[k] = x;
+    }
+    return a;
+  }
+  T get(int32_t k) const
+  {
+    if (k < 0) {
+      k += N;
+    }
+    return (k >= 0 && k < N) ? v[k] : T{};
+  }
+  T &at(int32_t k)
+  {
+    if (k < 0) {
+      k += N;
+    }
+    return (k >= 0 && k < N) ? v[k] : v[N];
+  }
+};
 
 }  // namespace toast

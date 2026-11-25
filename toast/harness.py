@@ -14,7 +14,12 @@ Geometry is points plus polygons, with attributes on points and on prims (faces)
     Geometry(points={"position": float32 (n, 3), ...}, prims=[[0, 1, 2], ...],
              prim_attrs={"color": float32 (len(prims), 3), ...})
 
-Kernels run over points, faces (prims) or the whole geometry once. Edges and corners exist only in Blender.
+Curves geometry has ``curves`` (the points of each curve, in order) instead of prims, with
+``curve_attrs``. Instances have ``instance_attrs``, with ``transform`` float32 (n, 4, 4)
+(column-major, like Blender's instance_transform); ``@position`` reads and writes its translation.
+
+Kernels run over points, faces (prims), curves, instances or the whole geometry once. Edges and
+corners exist only in Blender.
 
 Merge rules (the contract the fork must follow too):
 - Commands are sorted by (source element index, emission order). Chunks have a fixed size, so the
@@ -47,7 +52,15 @@ NP_TYPES = {
     "vec2": (np.float32, 2),
     "vec3": (np.float32, 3),
     "vec4": (np.float32, 4),
+    "quat": (np.float32, 4),
+    "mat4": (np.float32, (4, 4)),
 }
+
+
+def _shape(size, ncomp):
+    if isinstance(ncomp, tuple):
+        return (size,) + ncomp
+    return (size,) if ncomp == 1 else (size, ncomp)
 
 
 class HarnessError(Exception):
@@ -59,6 +72,20 @@ class Geometry:
     points: dict = field(default_factory=dict)
     prims: list = field(default_factory=list)
     prim_attrs: dict = field(default_factory=dict)
+    # Curves geometry: point indices of each curve (None for a mesh or point cloud).
+    curves: list = None
+    curve_attrs: dict = field(default_factory=dict)
+    instance_attrs: dict = field(default_factory=dict)
+
+    @property
+    def ncurves(self):
+        return 0 if self.curves is None else len(self.curves)
+
+    @property
+    def ninstances(self):
+        for v in self.instance_attrs.values():
+            return len(v)
+        return 0
 
     @property
     def nprims(self):
@@ -75,7 +102,10 @@ class Geometry:
     def copy(self):
         return Geometry({k: np.array(v, copy=True) for k, v in self.points.items()},
                         [list(p) for p in self.prims],
-                        {k: np.array(v, copy=True) for k, v in self.prim_attrs.items()})
+                        {k: np.array(v, copy=True) for k, v in self.prim_attrs.items()},
+                        None if self.curves is None else [list(c) for c in self.curves],
+                        {k: np.array(v, copy=True) for k, v in self.curve_attrs.items()},
+                        {k: np.array(v, copy=True) for k, v in self.instance_attrs.items()})
 
     def domain(self, name):
         """(attribute dict, element count) of a domain."""
@@ -83,7 +113,11 @@ class Geometry:
             return self.points, self.npoints
         if name == "face":
             return self.prim_attrs, self.nprims
-        raise HarnessError(f"the harness has no {name} domain (only points and faces)")
+        if name == "curve":
+            return self.curve_attrs, self.ncurves
+        if name == "instance":
+            return self.instance_attrs, self.ninstances
+        raise HarnessError(f"the harness has no {name} domain")
 
 
 def adapt_point_to_face(values, prims):
@@ -162,6 +196,11 @@ class ToastHit(ctypes.Structure):
     ]
 
 
+NCURVES_FN = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_void_p, ctypes.c_int32)
+REMOVE_CURVE_FN = ctypes.CFUNCTYPE(
+    None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64
+)
+
 RAY_CAST_FN = ctypes.CFUNCTYPE(
     ctypes.c_int32, ctypes.c_void_p, ctypes.c_int32, ctypes.POINTER(ctypes.c_float),
     ctypes.POINTER(ctypes.c_float), ctypes.c_float, ctypes.POINTER(ToastHit),
@@ -236,6 +275,9 @@ class ToastHost(ctypes.Structure):
         ("cmd_set_attr", SET_ATTR_FN),
         ("ray_cast", RAY_CAST_FN),
         ("closest_point", CLOSEST_FN),
+        ("ncurves", NCURVES_FN),
+        ("curve_points", PRIMPOINTS_FN),
+        ("cmd_remove_curve", REMOVE_CURVE_FN),
     ]
 
 
@@ -338,8 +380,12 @@ class _Host:
             self.c_point_faces, self.c_point_neighbors, self.c_corner_point, self.c_corner_face,
             self.c_set_attr, RAY_CAST_FN(self._guard(self._ray_cast, 0)),
             CLOSEST_FN(self._guard(self._closest_point, 0)),
+            NCURVES_FN(self._guard(self._ncurves, 0)),
+            PRIMPOINTS_FN(self._guard(self._curve_points, 0)),
+            REMOVE_CURVE_FN(self._guard(self._remove_curve, None)),
         )  # fmt: skip
-        self._keep_fns = (self.struct.ray_cast, self.struct.closest_point)
+        self._keep_fns = (self.struct.ray_cast, self.struct.closest_point, self.struct.ncurves,
+                          self.struct.curve_points, self.struct.cmd_remove_curve)  # fmt: skip
 
     def _guard(self, fn, default):
         def wrapped(*args):
@@ -385,11 +431,29 @@ class _Host:
 
     def _npoints(self, _self, inp):
         geo = self._input(inp)
-        return 0 if geo is None else geo.npoints
+        if geo is None:
+            return 0
+        return geo.npoints if geo.points or not geo.instance_attrs else geo.ninstances
 
     def _nprims(self, _self, inp):
         geo = self._input(inp)
         return 0 if geo is None else geo.nprims
+
+    def _ncurves(self, _self, inp):
+        geo = self._input(inp)
+        return 0 if geo is None else geo.ncurves
+
+    def _curve_points(self, _self, inp, curve, max_count, out):
+        geo = self._input(inp)
+        if geo is None or not 0 <= curve < geo.ncurves:
+            return 0
+        pts = geo.curves[curve]
+        for k, pt in enumerate(pts[:max_count]):
+            out[k] = int(pt)
+        return len(pts)
+
+    def _remove_curve(self, _self, cmd, src, curve):
+        self._chunk_list(cmd).append(("remove_curve", src, curve, None))
 
     def _primpoints(self, _self, inp, prim, max_count, out):
         geo = self._input(inp)
@@ -556,8 +620,14 @@ def _apply_sets(host, arrays):
         raw[elem] = np.frombuffer(data, dtype=np.uint8)
 
 
-def _merge(out, host, n_input_points, n_input_prims):
+def _merge(out, host, n_input_points, n_input_prims, run_over="points"):
     """Apply queued commands to ``out`` (the copy of input 0). See the module docstring."""
+    if run_over == "instances":
+        _merge_instances(out, host)
+        return
+    if out.curves is not None:
+        _merge_curves(out, host)
+        return
     all_cmds = []
     for chunk_id in sorted(host.cmds):
         for seq, c in enumerate(host.cmds[chunk_id]):
@@ -600,6 +670,8 @@ def _merge(out, host, n_input_points, n_input_prims):
             if not 0 <= payload < n_input_prims:
                 raise HarnessError(f"prim {payload} does not exist")
             removed_prims.add(payload)
+        elif kind == "remove_curve":
+            raise HarnessError("remove_curve() needs curves")
 
     n_new = len(new_positions)
     if n_new:
@@ -632,6 +704,59 @@ def _merge(out, host, n_input_points, n_input_prims):
         out.prims = [[int(remap[p]) for p in prim] for prim in out.prims]
 
 
+def _sorted_cmds(host):
+    cmds = []
+    for chunk_id in sorted(host.cmds):
+        for seq, c in enumerate(host.cmds[chunk_id]):
+            cmds.append((c[1], chunk_id, seq, c))
+    cmds.sort(key=lambda t: t[:3])
+    return [c[3] for c in cmds if c[3][0] != "set_attr"]
+
+
+def _merge_instances(out, host):
+    """remove_instance() (queued as remove_point): drop those instances, keeping the order."""
+    removed = set()
+    for kind, _src, payload, _h in _sorted_cmds(host):
+        if kind != "remove_point":
+            raise HarnessError(f"{kind} doesn't work on instances")
+        if not 0 <= payload < out.ninstances:
+            raise HarnessError(f"instance {payload} does not exist")
+        removed.add(payload)
+    if removed:
+        keep = np.array([k not in removed for k in range(out.ninstances)])
+        out.instance_attrs = {k: v[keep] for k, v in out.instance_attrs.items()}
+
+
+def _merge_curves(out, host):
+    """Curves: remove_curve() removes a curve with its points; remove_point() removes points, and
+    curves left without points (like Blender's Delete Geometry)."""
+    removed_curves, removed_points = set(), set()
+    for kind, _src, payload, _h in _sorted_cmds(host):
+        if kind == "remove_curve":
+            if not 0 <= payload < out.ncurves:
+                raise HarnessError(f"curve {payload} does not exist")
+            removed_curves.add(payload)
+        elif kind == "remove_point":
+            if not 0 <= payload < out.npoints:
+                raise HarnessError(f"point {payload} does not exist")
+            removed_points.add(payload)
+        else:
+            raise HarnessError(f"{kind} doesn't work on curves")
+    if not removed_curves and not removed_points:
+        return
+    keep_curve = np.array([k not in removed_curves for k in range(out.ncurves)], dtype=bool)
+    for k in np.flatnonzero(~keep_curve):
+        removed_points.update(out.curves[k])
+    keep_pt = np.ones(out.npoints, dtype=bool)
+    keep_pt[list(removed_points)] = False
+    remap = np.cumsum(keep_pt) - 1
+    curves = [[int(remap[p]) for p in c if keep_pt[p]] for c in out.curves]
+    keep_curve &= np.array([len(c) > 0 for c in curves], dtype=bool)
+    out.curves = [c for c, k in zip(curves, keep_curve) if k]
+    out.curve_attrs = {k: v[keep_curve] for k, v in out.curve_attrs.items()}
+    out.points = {k: v[keep_pt] for k, v in out.points.items()}
+
+
 def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=None,
         frame=1.0, time=0.0):  # fmt: skip
     """Run ``kernel`` (a toast.Kernel or LoadedKernel) and return the output Geometry.
@@ -650,15 +775,21 @@ def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=N
         n = out.npoints
     elif run_over == "faces":
         n = out.nprims
+    elif run_over == "curves":
+        n = out.ncurves
+    elif run_over == "instances":
+        n = out.ninstances
     elif run_over == "geometry":
         n = 1
     else:
-        raise HarnessError(f"the harness can't run over {run_over} (only points, faces, geometry)")
+        raise HarnessError(f"the harness can't run over {run_over}")
     n_input_prims = out.nprims
 
     # Bind attributes in signature order. Output arrays are the copy of input 0, so snapshot
     # reads (and every read of inputs 1+) see the unmodified input arrays.
     keep_alive = []
+    # Instance positions are the transforms' translation: bound as a copy, written back after.
+    position_writeback = None
     attrs = (ToastAttr * max(len(sig["attrs"]), 1))()
     for k, a in enumerate(sig["attrs"]):
         dtype, ncomp = NP_TYPES[a["type"]]
@@ -672,10 +803,18 @@ def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=N
         domain = a.get("domain", "point")
         container, size = geo.domain(domain)
         arr = container.get(a["name"])
-        if arr is None and domain == "face" and "w" not in a["access"] and a["name"] in geo.points:
-            arr = adapt_point_to_face(geo.points[a["name"]], geo.prims).astype(
+        if domain == "instance" and a["name"] == "position" and "transform" in container:
+            arr = np.ascontiguousarray(container["transform"][:, 3, :3])
+            if geo is out and "w" in a["access"]:
+                position_writeback = arr
+            keep_alive.append(arr)
+            attrs[k] = ToastAttr(arr.ctypes.data, len(arr), 0, 0)
+            continue
+        if arr is None and domain in ("face", "curve") and "w" not in a["access"] and a["name"] in geo.points:
+            groups = geo.prims if domain == "face" else geo.curves
+            arr = adapt_point_to_face(geo.points[a["name"]], groups).astype(
                 geo.points[a["name"]].dtype)
-        shape = (size,) if ncomp == 1 else (size, ncomp)
+        shape = _shape(size, ncomp)
         if arr is None:
             if not a["create"]:
                 raise HarnessError(f"attribute '{a['name']}' not found on input {inp}")
@@ -694,7 +833,7 @@ def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=N
 
     params_buf = pack_params(sig, params)
     host = _Host(inputs, [a.dtype.itemsize * (a.size // max(len(a), 1)) if len(a) else
-                          np.dtype(NP_TYPES[s["type"]][0]).itemsize * NP_TYPES[s["type"]][1]
+                          np.dtype(NP_TYPES[s["type"]][0]).itemsize * int(np.prod(NP_TYPES[s["type"]][1]))
                           for a, s in zip(keep_alive, sig["attrs"])])  # fmt: skip
 
     if selection is not None:
@@ -730,6 +869,8 @@ def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=N
     # Chunk ids were offset by one so the cmd pointer is never null.
     host.cmds = {cid - 1: lst for cid, lst in host.cmds.items()}
     _apply_sets(host, keep_alive)
-    _merge(out, host, out.npoints, n_input_prims)
+    if position_writeback is not None:
+        out.instance_attrs["transform"][:, 3, :3] = position_writeback
+    _merge(out, host, out.npoints, n_input_prims, run_over)
     del keep_alive
     return out

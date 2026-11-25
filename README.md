@@ -47,15 +47,16 @@ n = noise(@position * param("freq", 4.0))
 @color = (n, 0.3, 1 - n)                 # or typed by its first value
 ```
 
-Run Over (node setting): **Points**, **Faces**, **Edges**, **Face Corners** or **Geometry** (once,
-for setup or building geometry). `@` attributes live on that domain: in Faces mode `@color` is
+Run Over (node setting): **Points**, **Faces**, **Edges**, **Face Corners**, **Curves**,
+**Instances** or **Geometry** (once, for setup or building geometry). `@` attributes live on that domain: in Faces mode `@color` is
 a face color and reading `@position` gives the face center (Blender's domain interpolation);
 `@normal` is the vertex, face or corner normal. Geometry runs once for the whole geometry and
-has no `@` attributes. The numpy harness runs points, faces and geometry. The node's **Selection** input
+has no `@` attributes. The numpy harness runs points, faces, curves, instances and geometry. The node's **Selection** input
 (a boolean field on the Run Over domain, evaluated before the run) limits the run to selected
 elements; others are unchanged, while `@index` and `@count` keep referring to the whole domain.
 
-- Types `float int bool vec2 vec3 vec4`; a variable's type is fixed by its first assignment.
+- Types `float int bool vec2 vec3 vec4 quat mat4` and fixed-size lists (`[0.0] * 8`); a
+  variable's type is fixed by its first assignment.
   Tuples of 2 to 4 numbers are vectors. Annotations `x: vec3 = ...` are accepted.
 - Attributes use Blender's names: `@position @normal @color @velocity` (vec3), `@radius` (float),
   `@id` (int). `@color` is the mesh's active color attribute (created as a float color "Color"
@@ -135,6 +136,12 @@ Euclidean, detail 0, randomness `r`; distance, color and position outputs). Scal
 - ABI 4: adds `ToastHit`, `ray_cast` and `closest_point` (the input's triangles before the run).
   The harness does both by brute force over a fan triangulation, so compare it with Blender on
   triangle meshes.
+- ABI 5: adds `ncurves`, `curve_points`, `cmd_remove_curve`, the curve and instance domain
+  codes, and the `quat` (w, x, y, z) and `mat4` (column-major 4x4) attribute types. The node runs
+  Points on each of the mesh, point cloud and curves; input 0 is then only that component.
+  Instance `@position` is bound as a copy of the transforms' translation and written back after
+  `@transform`, so it wins. On curves, `remove_point`/`remove_curve` use
+  `curves_copy_point_selection` (curves without points go).
 
 ## Measurements (2026-11-24, 32 threads, g++ 14, fork 5.3)
 
