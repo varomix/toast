@@ -2,7 +2,7 @@
 # Each branch is a few bent segments; at its end it splits into children, which are pushed on
 # the stack until the depth runs out. With "growth" below 0 (the default), the tree grows with
 # the timeline: one level of branches every 20 frames.
-from toast_lib.tree import child_rotation, bend_up, grown
+from toast_lib.tree import child_rotation, bend_up, grown, leaf_scale
 
 depth_max = param("depth", 7)
 children = param("children", 3)
@@ -62,9 +62,14 @@ while top > 0:
         add_edge(prev, pt)
         set_point_attr(pt, "radius", radius * g * lerp(1.0, ratio * 0.9, (k + 1) / segments))
         prev = pt
-    if depth + 1 >= depth_max or g < 1:
+    # The leaf at the branch's tip; it shrinks away while the children's leaves grow in.
+    last = depth + 1 >= depth_max
+    ls = leaf_scale(growth - depth, last)
+    if ls > 0:
         set_point_attr(prev, "leaf", True)
         set_point_attr(prev, "leaf_id", bid)   # leaves.py turns each leaf by it
+        set_point_attr(prev, "leaf_scale", ls)
+    if last or g < 1:
         continue
     for c in range(children):
         if top >= 512:
