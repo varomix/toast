@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,7 +32,8 @@ RUNTIME_HEADER = RUNTIME_DIR / "toast_rt.h"
 CXX_FLAGS = (
     "-std=c++17",
     "-O3",
-    "-march=native",
+    # Apple's clang may reject -march=native on Apple silicon; its default target is fine there.
+    *(() if sys.platform == "darwin" else ("-march=native",)),
     "-fPIC",
     "-shared",
     "-fno-math-errno",
