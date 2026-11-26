@@ -161,6 +161,12 @@ Euclidean, detail 0, randomness `r`; distance, color and position outputs). Scal
   Instance `@position` is bound as a copy of the transforms' translation and written back after
   `@transform`, so it wins. On curves, `remove_point`/`remove_curve` use
   `curves_copy_point_selection` (curves without points go).
+- ABI 6: adds `cmd_add_curve` (a curve through points, like `cmd_add_prim`) and
+  `cmd_extend_curve` (a point at a curve's tip; returns a point handle numbered with
+  `cmd_add_point`'s, copies the tip's other attributes). The signature's `uses.curves` makes Run
+  Over Geometry run on curves (made if missing). The node rebuilds the curves once after the run:
+  input curves with their new tips, then new curves (poly), then removals; `_merge_curves` in the
+  harness is the reference.
 
 ## Measurements (2026-11-24, 32 threads, g++ 14, fork 5.3)
 

@@ -56,7 +56,7 @@ INPUT0_DOMAINS = {
     "corners": {"point", "face", "edge", "corner"},
     "curves": {"point", "curve"},
     "instances": {"instance"},
-    "geometry": {"point", "face", "edge", "corner"},
+    "geometry": {"point", "face", "edge", "corner", "curve"},
 }
 DOMAIN_WORD = {"point": "points", "face": "faces", "edge": "edges", "corner": "face corners",
                "curve": "curves", "instance": "instances"}  # fmt: skip
@@ -110,7 +110,7 @@ BUILTINS = set(UNARY_MATH) | {
     "point_faces", "point_neighbors", "corner_point", "corner_face", "set_point_attr",
     "set_face_attr", "ray_cast", "closest_point", "sample_nearest_surface", "voronoi",
     "curl_noise", "len", "curve_attr", "instance_attr", "curve_count", "curve_points",
-    "remove_curve", "remove_instance", "quat", "mat4", "quat_axis_angle", "quat_euler",
+    "remove_curve", "add_curve", "extend_curve", "remove_instance", "quat", "mat4", "quat_axis_angle", "quat_euler",
     "quat_between", "rotate", "slerp", "inverse", "to_euler", "transpose", "transform_point",
     "transform_direction", "mat4_translation", "mat4_rotation", "mat4_scale", "mat4_compose",
     "output",
@@ -206,6 +206,7 @@ class Compiler:
     nearpoints_inputs: set = field(default_factory=set)
     surface_inputs: set = field(default_factory=set)
     uses_cmd: bool = False
+    builds_curves: bool = False  # add_curve()/extend_curve(): Run Over Geometry runs on curves.
     uses_return: bool = False
     uses_time: bool = False
     loop_depth: int = 0
@@ -1305,7 +1306,7 @@ class Compiler:
 
     def call_remove_curve(self, node, expect):
         (a,) = self._args(node, "remove_curve", 1)
-        self._check_mode("remove_curve", ("points", "curves"), node)
+        self._check_mode("remove_curve", ("points", "curves", "geometry"), node)
         e = self.expr(a)
         if e.type != INT:
             self.err(f"remove_curve() needs a curve number, got {e.type}", a)
@@ -1450,8 +1451,8 @@ class Compiler:
 
     def call_add_point(self, node, expect):
         (a,) = self._args(node, "add_point", 1)
-        self._check_mode("add_point", ("points", "faces", "edges", "corners", "geometry"), node,
-                         ": points can only be added to meshes and point clouds")  # fmt: skip
+        self._check_mode("add_point", ("points", "faces", "edges", "corners", "curves", "geometry"),
+                         node)  # fmt: skip
         pos = self.coerce(self.expr(a, VEC3), VEC3, a, "add_point() position")
         self.uses_cmd = True
         return E(f"toast::add_point(c, i, {pos})", POINTREF)
@@ -1475,6 +1476,38 @@ class Compiler:
         pts = self._point_refs("add_face", a.elts)
         self.uses_cmd = True
         return E(f"toast::add_prim(c, i, {', '.join(pts)})", NONE)
+
+    def call_add_curve(self, node, expect):
+        """add_curve((a, b, ...)), or add_curve(points, count) with a list of point numbers."""
+        args = self._args(node, "add_curve", 1, 2)
+        self._check_mode("add_curve", ("points", "curves", "geometry"), node)
+        self.uses_cmd = True
+        self.builds_curves = True
+        if len(args) == 2:
+            lst = self.expr(args[0])
+            elem = array_parts(lst.type)[0] if lst.type.is_array else None
+            if elem != INT:
+                self.err("add_curve(points, count): points must be a list of point numbers "
+                         f"(list[int]), got {lst.type}", args[0])  # fmt: skip
+            n = self.coerce(self.expr(args[1]), INT, args[1], "add_curve() count")
+            return E(f"toast::add_curve_list(c, i, {lst.code}, {n})", NONE)
+        (a,) = args
+        if not isinstance(a, (ast.Tuple, ast.List)) or len(a.elts) < 1:
+            self.err("add_curve() takes a tuple of points, like add_curve((a, b, c)), or a list of "
+                     "point numbers and a count: add_curve(points, n)", node)  # fmt: skip
+        pts = self._point_refs("add_curve", a.elts)
+        return E(f"toast::add_curve(c, i, {', '.join(pts)})", NONE)
+
+    def call_extend_curve(self, node, expect):
+        a_curve, a_pos = self._args(node, "extend_curve", 2)
+        self._check_mode("extend_curve", ("points", "curves", "geometry"), node)
+        curve = self.expr(a_curve)
+        if curve.type != INT:
+            self.err(f"extend_curve() needs a curve number, got {curve.type}", a_curve)
+        pos = self.coerce(self.expr(a_pos, VEC3), VEC3, a_pos, "extend_curve() position")
+        self.uses_cmd = True
+        self.builds_curves = True
+        return E(f"toast::extend_curve(c, i, {curve.code}, {pos})", POINTREF)
 
     def call_add_edge(self, node, expect):
         args = self._args(node, "add_edge", 2)
@@ -2141,6 +2174,7 @@ class Compiler:
                         for n, (t, _line) in self.outputs.items()],  # fmt: skip
             "uses": {
                 "cmd": self.uses_cmd,
+                "curves": self.builds_curves,
                 "time": self.uses_time,
                 "host": sorted(self.host_uses | ({"cmd"} if self.uses_cmd else set())),
                 "inputs": sorted(self.inputs_used | {0}),

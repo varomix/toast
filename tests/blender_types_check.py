@@ -7,8 +7,9 @@
   blender -b --factory-startup --enable-autoexec --python blender_types_check.py -- <repo> <cases.json>
 
 Each case runs a Toast node on one input ("grid": a 4x3 grid mesh, "curves": two hair curves of
-3 and 4 points, "instances": 4 cube instances on a line) and dumps the output: positions,
-topology and every attribute, floats as their bits.
+3 and 4 points, "curves_w" / "curves_k": the same with a point float "w" = 1..7 / a curve int "k"
+= 10, 20, "empty": an empty mesh, dumped as curves, "instances": 4 cube instances on a line) and
+dumps the output: positions, topology and every attribute, floats as their bits.
 """
 
 import json
@@ -58,15 +59,19 @@ def make_input(kind):
     if kind == "grid":
         bpy.ops.mesh.primitive_grid_add(x_subdivisions=4, y_subdivisions=3, size=2)
         return bpy.context.active_object
-    if kind == "curves":
+    if kind.startswith("curves"):
         curves = bpy.data.hair_curves.new("c")
         curves.add_curves(CURVE_SIZES)
         for p, co in zip(curves.points, CURVE_POINTS):
             p.position = co
+        if kind == "curves_w":
+            curves.attributes.new("w", "FLOAT", "POINT").data.foreach_set("value", [1, 2, 3, 4, 5, 6, 7])
+        if kind == "curves_k":
+            curves.attributes.new("k", "INT", "CURVE").data.foreach_set("value", [10, 20])
         obj = bpy.data.objects.new("c", curves)
         bpy.context.scene.collection.objects.link(obj)
         return obj
-    # instances: an empty mesh whose node tree builds the instances before the Toast node.
+    # empty, instances: an empty mesh (whose node tree builds the instances before the Toast node).
     obj = bpy.data.objects.new("i", bpy.data.meshes.new("i"))
     bpy.context.scene.collection.objects.link(obj)
     return obj
@@ -123,15 +128,19 @@ def dump(obj, kind):
         mesh.attributes["position"].data.foreach_get("vector", pos)
         return {"P": bits(pos), "faces": [list(f.vertices) for f in mesh.polygons],
                 "attrs": dump_attributes(mesh.attributes, ("position",))}  # fmt: skip
-    if kind == "curves":
+    if kind.startswith("curves") or kind == "empty":
         curves = geo.curves
         if curves is None:
             return {"P": [], "curves": [], "attrs": {}}
         pos = [0.0] * (3 * len(curves.points))
         curves.attributes["position"].data.foreach_get("vector", pos)
         sizes = [c.points_length for c in curves.curves]
-        return {"P": bits(pos), "curves": sizes,
-                "attrs": dump_attributes(curves.attributes, ("position",))}  # fmt: skip
+        types = [0] * len(curves.curves)
+        if "curve_type" in curves.attributes:
+            curves.attributes["curve_type"].data.foreach_get("value", types)
+        names = {0: "CATMULL_ROM", 1: "POLY", 2: "BEZIER", 3: "NURBS"}
+        return {"P": bits(pos), "curves": sizes, "curve_types": [names[t] for t in types],
+                "attrs": dump_attributes(curves.attributes, ("position", "curve_type"))}  # fmt: skip
     cloud = geo.instances_pointcloud()
     return {"count": len(cloud.points), "attrs": dump_attributes(cloud.attributes)}
 

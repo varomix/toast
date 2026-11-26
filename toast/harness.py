@@ -200,6 +200,11 @@ NCURVES_FN = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_void_p, ctypes.c_int32)
 REMOVE_CURVE_FN = ctypes.CFUNCTYPE(
     None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64
 )
+# ABI 6.
+EXTEND_CURVE_FN = ctypes.CFUNCTYPE(
+    ctypes.c_int64, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64,
+    ctypes.POINTER(ctypes.c_float),
+)  # fmt: skip
 
 RAY_CAST_FN = ctypes.CFUNCTYPE(
     ctypes.c_int32, ctypes.c_void_p, ctypes.c_int32, ctypes.POINTER(ctypes.c_float),
@@ -278,6 +283,8 @@ class ToastHost(ctypes.Structure):
         ("ncurves", NCURVES_FN),
         ("curve_points", PRIMPOINTS_FN),
         ("cmd_remove_curve", REMOVE_CURVE_FN),
+        ("cmd_add_curve", ADD_PRIM_FN),
+        ("cmd_extend_curve", EXTEND_CURVE_FN),
     ]
 
 
@@ -383,9 +390,12 @@ class _Host:
             NCURVES_FN(self._guard(self._ncurves, 0)),
             PRIMPOINTS_FN(self._guard(self._curve_points, 0)),
             REMOVE_CURVE_FN(self._guard(self._remove_curve, None)),
+            ADD_PRIM_FN(self._guard(self._add_curve, None)),
+            EXTEND_CURVE_FN(self._guard(self._extend_curve, 0)),
         )  # fmt: skip
         self._keep_fns = (self.struct.ray_cast, self.struct.closest_point, self.struct.ncurves,
-                          self.struct.curve_points, self.struct.cmd_remove_curve)  # fmt: skip
+                          self.struct.curve_points, self.struct.cmd_remove_curve,
+                          self.struct.cmd_add_curve, self.struct.cmd_extend_curve)  # fmt: skip
 
     def _guard(self, fn, default):
         def wrapped(*args):
@@ -597,6 +607,18 @@ class _Host:
         lst.append(("add_point", src, (pos3[0], pos3[1], pos3[2]), handle))
         return handle
 
+    def _add_curve(self, _self, cmd, src, pts, n):
+        self._chunk_list(cmd).append(("add_curve", src, [pts[k] for k in range(n)], None))
+
+    def _extend_curve(self, _self, cmd, src, curve, pos3):
+        """A new point at a curve's tip: a point handle, numbered with add_point()'s."""
+        lst = self._chunk_list(cmd)
+        local = self.added.get(cmd, 0)
+        self.added[cmd] = local + 1
+        handle = -(((cmd - 1) << 32) | local) - 1
+        lst.append(("extend_curve", src, (curve, (pos3[0], pos3[1], pos3[2])), handle))
+        return handle
+
     def _add_prim(self, _self, cmd, src, pts, n):
         self._chunk_list(cmd).append(("add_prim", src, [pts[k] for k in range(n)], None))
 
@@ -637,7 +659,7 @@ def _merge(out, host, n_input_points, n_input_prims, run_over="points", attr_nam
         _merge_instances(out, host)
         return
     if out.curves is not None:
-        _merge_curves(out, host)
+        _merge_curves(out, host, attr_names, new_point_set)
         return
     all_cmds = []
     for chunk_id in sorted(host.cmds):
@@ -684,8 +706,8 @@ def _merge(out, host, n_input_points, n_input_prims, run_over="points", attr_nam
             if not 0 <= payload < n_input_prims:
                 raise HarnessError(f"prim {payload} does not exist")
             removed_prims.add(payload)
-        elif kind == "remove_curve":
-            raise HarnessError("remove_curve() needs curves")
+        elif kind in ("remove_curve", "add_curve", "extend_curve"):
+            raise HarnessError(f"{kind}() needs curves")
 
     n_new = len(new_positions)
     if n_new:
@@ -746,34 +768,121 @@ def _merge_instances(out, host):
         out.instance_attrs = {k: v[keep] for k, v in out.instance_attrs.items()}
 
 
-def _merge_curves(out, host):
-    """Curves: remove_curve() removes a curve with its points; remove_point() removes points, and
-    curves left without points (like Blender's Delete Geometry)."""
-    removed_curves, removed_points = set(), set()
-    for kind, _src, payload, _h in _sorted_cmds(host):
-        if kind == "remove_curve":
-            if not 0 <= payload < out.ncurves:
+def _merge_curves(out, host, attr_names=(), new_point_set=lambda payload: False):
+    """Curves. In merged (src, emission order) order:
+    - add_point() and extend_curve() points are numbered from the input's point count on, as on
+      meshes. extend_curve() points go at the tip of their curve and copy the tip point's other
+      attributes (of the input); add_point() points get zero attributes and must each be in
+      exactly one add_curve().
+    - add_curve() curves go after the input's curves, through their points in order, with zero
+      curve attributes.
+    - set_point_attr() on new points, then removals: remove_curve() removes a curve with its
+      points, remove_point() removes points, and curves left without points.
+    The result stores each curve's points together, curves in order."""
+    n_in, nc_in = out.npoints, out.ncurves
+    cmds = []
+    for chunk_id in sorted(host.cmds):
+        for seq, c in enumerate(host.cmds[chunk_id]):
+            cmds.append((c[1], chunk_id, seq, c))
+    cmds.sort(key=lambda t: t[:3])
+    cmds = [c[3] for c in cmds]
+    n_added = sum(1 for c in cmds if c[0] in ("add_point", "extend_curve"))
+    handle_to_index = {}
+
+    def resolve(pt):
+        if pt < 0:
+            if pt not in handle_to_index:
+                raise HarnessError(f"unknown point handle {pt}")
+            return handle_to_index[pt]
+        if pt >= n_in + n_added:
+            raise HarnessError(f"point {pt} does not exist")
+        return pt
+
+    new_pos, new_src = [], []  # Position and attribute source (-1: zeros) of each new point.
+    extensions = [[] for _ in range(nc_in)]
+    new_curves, removed_curves, removed_points, sets = [], set(), set(), []
+    extended = set()
+    for kind, _src, payload, handle in cmds:
+        if kind == "set_attr":
+            if new_point_set(payload):
+                sets.append(payload)
+        elif kind == "add_point":
+            handle_to_index[handle] = n_in + len(new_pos)
+            new_pos.append(payload)
+            new_src.append(-1)
+        elif kind == "extend_curve":
+            curve, pos = payload
+            if not 0 <= curve < nc_in:
+                raise HarnessError(f"curve {curve} does not exist (extend_curve)")
+            index = n_in + len(new_pos)
+            handle_to_index[handle] = index
+            new_pos.append(pos)
+            new_src.append(out.curves[curve][-1] if out.curves[curve] else -1)
+            extensions[curve].append(index)
+            extended.add(index)
+        elif kind == "add_curve":
+            new_curves.append([resolve(p) for p in payload])
+        elif kind == "remove_curve":
+            if not 0 <= payload < nc_in:
                 raise HarnessError(f"curve {payload} does not exist")
             removed_curves.add(payload)
         elif kind == "remove_point":
-            if not 0 <= payload < out.npoints:
-                raise HarnessError(f"point {payload} does not exist")
-            removed_points.add(payload)
+            removed_points.add(resolve(payload))
         else:
             raise HarnessError(f"{kind} doesn't work on curves")
-    if not removed_curves and not removed_points:
+    if not (new_pos or new_curves or removed_curves or removed_points):
         return
-    keep_curve = np.array([k not in removed_curves for k in range(out.ncurves)], dtype=bool)
-    for k in np.flatnonzero(~keep_curve):
-        removed_points.update(out.curves[k])
-    keep_pt = np.ones(out.npoints, dtype=bool)
+
+    # Every point added with add_point() is in exactly one new curve; extension points in none.
+    used = np.zeros(n_in + len(new_pos), dtype=np.int32)
+    for c in new_curves:
+        for p in c:
+            if p < n_in or p in extended:
+                raise HarnessError(f"add_curve(): point {p} is already in a curve")
+            used[p] += 1
+    for k, src in enumerate(new_src):
+        index = n_in + k
+        if index not in extended and used[index] != 1:
+            raise HarnessError(f"point {index} from add_point() is in {used[index]} curves "
+                               "(add_curve), it must be in one")  # fmt: skip
+
+    # Points in merged numbering: input points, then new ones.
+    gather = np.concatenate([np.arange(n_in), np.array([max(s, 0) for s in new_src], dtype=np.int64)])
+    zero = np.array([s < 0 for s in new_src], dtype=bool)
+    points = {}
+    for name, arr in out.points.items():
+        merged = arr[gather] if len(arr) else np.zeros((len(gather),) + arr.shape[1:], arr.dtype)
+        if len(new_src):
+            merged[n_in:][zero] = 0
+        points[name] = merged
+    if new_pos:
+        pos = points.setdefault("position", np.zeros((len(gather), 3), np.float32))
+        pos[n_in:] = np.array(new_pos, dtype=np.float32)
+    for attr, handle, data in sets:
+        arr = points[attr_names[attr]]
+        raw = arr.view(np.uint8).reshape(len(arr), -1)
+        raw[resolve(handle)] = np.frombuffer(data, dtype=np.uint8)
+
+    keep_pt = np.ones(len(gather), dtype=bool)
     keep_pt[list(removed_points)] = False
-    remap = np.cumsum(keep_pt) - 1
-    curves = [[int(remap[p]) for p in c if keep_pt[p]] for c in out.curves]
-    keep_curve &= np.array([len(c) > 0 for c in curves], dtype=bool)
-    out.curves = [c for c, k in zip(curves, keep_curve) if k]
-    out.curve_attrs = {k: v[keep_curve] for k, v in out.curve_attrs.items()}
-    out.points = {k: v[keep_pt] for k, v in out.points.items()}
+    curves = [list(c) + extensions[k] for k, c in enumerate(out.curves)] + new_curves
+    keep_curve = [k not in removed_curves for k in range(nc_in)] + [True] * len(new_curves)
+    for k, c in enumerate(curves):
+        if not keep_curve[k]:
+            keep_pt[c] = False
+    curves = [[p for p in c if keep_pt[p]] for c in curves]
+    keep_curve = np.array([k and len(c) > 0 for k, c in zip(keep_curve, curves)], dtype=bool)
+    order = [p for c, k in zip(curves, keep_curve) if k for p in c]
+    out.points = {k: v[np.array(order, dtype=np.int64)] for k, v in points.items()}
+    out.curves, start = [], 0
+    for c, k in zip(curves, keep_curve):
+        if k:
+            out.curves.append(list(range(start, start + len(c))))
+            start += len(c)
+    out.curve_attrs = {
+        k: np.concatenate([v, np.zeros((len(new_curves),) + v.shape[1:], v.dtype)])[keep_curve]
+        for k, v in out.curve_attrs.items()
+    }
 
 
 def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=None,
@@ -790,6 +899,11 @@ def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=N
         raise HarnessError("input 0 is required")
     out = inputs[0].copy()
     run_over = sig["run_over"]
+    if sig["uses"].get("curves") and out.curves is None:
+        if out.npoints or out.nprims:
+            raise HarnessError("the code makes curves, but input 0 is a mesh or point cloud (the "
+                               "harness holds one kind of geometry)")  # fmt: skip
+        out.curves = []
     if run_over == "points":
         n = out.npoints
     elif run_over == "faces":

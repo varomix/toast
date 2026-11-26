@@ -839,6 +839,81 @@ def metaballs():
     save("10_metaballs")
 
 
+def trails():
+    new_file(400)
+    # Curves render only from a Curves object: it starts empty, the seed node makes the curves.
+    obj = bpy.data.objects.new("Trails", bpy.data.hair_curves.new("Trails"))
+    bpy.context.scene.collection.objects.link(obj)
+    t = Tree(obj, "Trails")
+    seed = t.toast("trails/seed", (0, 0))
+    t.link(t.input.outputs[0], seed.inputs["Geometry"])
+    sin, sout = t.sim_zone(250, 700)
+    step = t.toast("trails/step", (450, 0))
+    t.link(seed.outputs[0], sin.inputs["Geometry"])
+    t.link(sin.outputs["Geometry"], step.inputs["Geometry"])
+    t.link(step.outputs[0], sout.inputs["Geometry"])
+    # Thin at the tail, full at the particle; "along" (0 at the tail, 1 at the tip) for the shader.
+    param = t.node("GeometryNodeSplineParameter", (750, -300))
+    radius = t.node("ShaderNodeMath", (950, -300), label="Radius")
+    radius.operation = "MULTIPLY"
+    radius.inputs[1].default_value = 0.007
+    t.link(param.outputs["Factor"], radius.inputs[0])
+    set_radius = t.node("GeometryNodeSetCurveRadius", (950, 0))
+    t.link(sout.outputs["Geometry"], set_radius.inputs["Curve"])
+    t.link(radius.outputs[0], set_radius.inputs["Radius"])
+    store = t.node("GeometryNodeStoreNamedAttribute", (1150, 0))
+    store.data_type = "FLOAT"
+    store.inputs["Name"].default_value = "along"
+    t.link(set_radius.outputs[0], store.inputs["Geometry"])
+    t.link(param.outputs["Factor"], store.inputs["Value"])
+
+    mat = bpy.data.materials.new("Trail")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = nt.nodes["Principled BSDF"]
+    bsdf.inputs["Base Color"].default_value = (0, 0, 0, 1)
+    hue = nt.nodes.new("ShaderNodeAttribute")
+    hue.attribute_name = "hue"
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    els = ramp.color_ramp.elements
+    els[0].color = (0.1, 0.35, 1.0, 1)
+    els[1].color = (1.0, 0.25, 0.6, 1)
+    els.new(0.5).color = (0.2, 1.0, 0.8, 1)
+    nt.links.new(hue.outputs["Fac"], ramp.inputs["Fac"])
+    along = nt.nodes.new("ShaderNodeAttribute")
+    along.attribute_name = "along"
+    glow = nt.nodes.new("ShaderNodeMath")
+    glow.operation = "POWER"
+    glow.inputs[1].default_value = 2.0
+    nt.links.new(along.outputs["Fac"], glow.inputs[0])
+    strength = nt.nodes.new("ShaderNodeMath")
+    strength.operation = "MULTIPLY"
+    strength.inputs[1].default_value = 2.5
+    nt.links.new(glow.outputs[0], strength.inputs[0])
+    nt.links.new(ramp.outputs["Color"], bsdf.inputs["Emission Color"])
+    nt.links.new(strength.outputs[0], bsdf.inputs["Emission Strength"])
+    setmat = t.node("GeometryNodeSetMaterial", (1350, 0))
+    setmat.inputs["Material"].default_value = mat
+    t.link(store.outputs[0], setmat.inputs["Geometry"])
+    t.finish(setmat.outputs[0], 1550)
+    obj.data.materials.append(mat)
+
+    bpy.context.scene.world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.004, 0.004, 0.008, 1)
+    camera((0, -9.5, 1.5), (0, 0, 0), lens=40)
+    note([
+        "Trails: 1200 particles in a curl noise flow, each leaving a curve behind. Press Play.",
+        "",
+        "seed.py  (Geometry)  one curve per particle: add_point() + add_curve()",
+        "step.py  (Curves)    in the Simulation Zone, once per curve: moves the tip through the",
+        "                     flow and adds it with extend_curve(); past `trail` points, the",
+        "                     oldest is removed (remove_point), so trails keep their length",
+        "",
+        "Blender nodes taper the trails (Spline Parameter -> radius) and the material glows",
+        "toward the particle. Try: count 20000, trail 120, speed, scale, evolve.",
+    ])
+    save("11_trails")
+
+
 EXAMPLES = {
     "flocking": flocking,
     "reaction_diffusion": reaction_diffusion,
@@ -850,6 +925,7 @@ EXAMPLES = {
     "occlusion": occlusion,
     "ripples": ripples,
     "metaballs": metaballs,
+    "trails": trails,
 }
 
 if __name__ == "__main__":

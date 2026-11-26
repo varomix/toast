@@ -317,19 +317,26 @@ attributes the code is writing.
 
 | Function | Does |
 | --- | --- |
-| `add_point(position)` | Adds a point and returns it, for `add_edge`/`add_face` in the same run. |
+| `add_point(position)` | Adds a point and returns it, for `add_edge`/`add_face`/`add_curve` in the same run. |
 | `add_edge(a, b)` | Adds an edge. |
 | `add_face((a, b, c, ...))` | Adds a face through 3 or more points. |
 | `remove_point(p)` | Removes a point and the edges and faces using it. |
 | `remove_face(f)` | Removes a face and keeps its points (like Delete Geometry, Only Faces). |
+| `add_curve((a, b, ...))`, `add_curve(points, n)` | Adds a curve through points made with `add_point()`, in order: a tuple, or the first `n` point numbers of a list of ints. Each new point must be in exactly one new curve. New curves are poly curves. |
+| `extend_curve(c, position)` | Adds a point at the tip of curve `c` and returns it (for `set_point_attr()`). The new point copies the tip's other attributes, like its radius. |
 | `remove_curve(c)` | Removes a curve and its points. |
 | `remove_instance(i)` | Removes an instance (Run Over Instances). |
 | `set_point_attr(index, "name", value)`, `set_face_attr(...)` | Writes another element's attribute. `set_point_attr()` also writes points added in the same run: pass what `add_point()` returned, or the point's number (see the grid example below). |
 
 These are applied after the run in element order: new elements are numbered by the element that
-created them, and when several elements write the same attribute, the highest index wins. On
-curves, points and curves can be removed but not added; removing the last point of a curve
-removes the curve.
+created them, and when several elements write the same attribute, the highest index wins.
+Removing the last point of a curve removes the curve.
+
+On curves, new points are stored with their curve: the input's curves come first, each followed
+by the points `extend_curve()` added to it, then the new curves. Inside a run, use the numbers
+described under "Build a grid from scratch" (`point_count(0)` on, in the order added); after it,
+points are renumbered curve by curve. With Run Over Geometry, code that makes curves runs on the
+geometry's curves, and creates them if there are none (a mesh next to them is left as it is).
 
 ## Cookbook
 
@@ -439,6 +446,36 @@ s = map_range(random(@index, 1), 0, 1, 0.5, 1.5)
 ```toast curves
 if random(@index, param("seed", 0)) > 0.5:
     remove_curve(@index)
+```
+
+### Grow every curve from its tip (Run Over: Curves)
+
+Inside a Simulation Zone, the curves get longer every frame: trails, vines, hair growing out.
+
+```toast curves
+tip = 0
+for p in curve_points(0, @index, 4096):
+    tip = p
+here: vec3 = point_attr(0, "position", tip)
+step = curl_noise(here * param("scale", 1.5)) * param("speed", 0.05)
+extend_curve(@index, here + step)
+```
+
+### Draw curves from scratch (Run Over: Geometry)
+
+```toast geometry
+count = param("curves", 12)
+size = min(param("points", 40), 64)   # points per curve, at most the list's 64
+pts = [0] * 64
+n = point_count(0)
+for c in range(count):
+    p = vec3(float(c) * 0.2, 0, 0)
+    for k in range(size):
+        add_point(p)
+        pts[k] = n
+        n += 1
+        p += (0, 0.05, 0) + curl_noise(p * 2) * 0.02
+    add_curve(pts, size)
 ```
 
 ### Select with code, then use the selection in other nodes

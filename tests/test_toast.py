@@ -905,7 +905,10 @@ class TestRotations(unittest.TestCase):
 class TestCurvesAndInstances(unittest.TestCase):
     def test_mode_errors(self):
         for src, run_over, msg in (
-            ("add_point((0, 0, 0))\n", "curves", "points can only be added"),
+            ("add_point((0, 0, 0))\n", "instances", "doesn't work with Run Over Instances"),
+            ("add_curve((0, 1))\n", "faces", "doesn't work with Run Over Faces"),
+            ("extend_curve(0, (0, 0, 0))\n", "instances", "doesn't work with Run Over Instances"),
+            ("x = [0.0] * 4\nadd_curve(x, 2)\n", "geometry", "list of point numbers"),
             ("remove_point(0)\n", "instances", "use remove_instance()"),
             ("x = point_attr(0, 'a', 0)\n", "instances", "only instances"),
             ("remove_face(0)\n", "curves", "no faces"),
@@ -925,6 +928,43 @@ class TestCurvesAndInstances(unittest.TestCase):
         out = run(toast.build(code), [Geometry({"position": np.zeros((3, 3), np.float32)}), curves])
         np.testing.assert_array_equal(out.points["k"], [2, 3, 2])
         np.testing.assert_array_equal(out.points["n"], [23] * 3)
+
+    def test_extend_curves(self):
+        # Each curve grows two points from its tip; the tip's other attributes are copied.
+        curves = Geometry({"position": np.array([(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0), (2, 1, 0)],
+                                                np.float32),
+                           "w": np.array([1, 2, 3, 4, 5], np.float32)}, curves=[[0, 1], [2, 3, 4]])  # fmt: skip
+        out = run_all_threads(self, toast.build(GROW_CODE, run_over="curves"), [curves], grain=1)
+        self.assertEqual(out.curves, [[0, 1, 2, 3], [4, 5, 6, 7, 8]])
+        np.testing.assert_array_equal(out.points["position"][[2, 3, 7, 8]],
+                                      [(1, 0, 0.5), (1, 0, 1), (2, 1, 0.5), (2, 1, 1)])  # fmt: skip
+        np.testing.assert_array_equal(out.points["w"], [1, 2, 2, 7, 3, 4, 5, 5, 7])
+
+    def test_build_curves_from_nothing(self):
+        out = run(toast.build(BUILD_CURVES_CODE, run_over="geometry"), [Geometry()])
+        self.assertEqual([len(c) for c in out.curves], [4, 5, 6, 2])
+        np.testing.assert_array_equal(out.points["position"][-2:], [(9, 9, 9), (9, 9, 10)])
+        np.testing.assert_array_equal(out.points["position"][4], (0, 1, 0))
+
+    def test_edit_curves(self):
+        curves = Geometry({"position": np.arange(15, dtype=np.float32).reshape(5, 3)},
+                          curves=[[0, 1], [2, 3, 4]],
+                          curve_attrs={"k": np.array([10, 20], np.int32)})  # fmt: skip
+        out = run(toast.build(EDIT_CURVES_CODE, run_over="geometry"), [curves])
+        # Curve 0 removed; curve 1 loses its first point and gains a tip; a new curve follows.
+        self.assertEqual(out.curves, [[0, 1, 2], [3, 4]])
+        np.testing.assert_array_equal(out.points["position"],
+                                      [(9, 10, 11), (12, 13, 14), (4, 2, 0), (5, 0, 0), (5, 1, 0)])  # fmt: skip
+        np.testing.assert_array_equal(out.curve_attrs["k"], [20, 0])
+
+    def test_curve_errors(self):
+        empty = Geometry(curves=[])
+        for code, msg in (("add_point((0, 0, 0))\n", "must be in one"),
+                          ("a = add_point((0, 0, 0))\nadd_curve((a,))\nadd_curve((a,))\n", "must be in one"),
+                          ("add_curve((0,))\n", "does not exist")):  # fmt: skip
+            with self.subTest(code=code), self.assertRaises(HarnessError) as cm:
+                run(toast.build(code, run_over="geometry"), [empty])
+            self.assertIn(msg, str(cm.exception))
 
     def test_instance_position_and_transform(self):
         t = np.tile(np.eye(4, dtype=np.float32), (2, 1, 1))
@@ -1449,6 +1489,35 @@ class TestBlenderSelection(unittest.TestCase):
 
 
 CURVES_POINTS_CODE = "@position.z += @index * 0.5\n@w: float = noise(@position)\n"
+GROW_CODE = """tip = 0
+for p in curve_points(0, @index, 16):
+    tip = p
+here: vec3 = point_attr(0, "position", tip)
+extend_curve(@index, here + (0, 0, 0.5))
+b = extend_curve(@index, here + (0, 0, 1.0))
+set_point_attr(b, "w", 7.0)
+"""
+BUILD_CURVES_CODE = """base = point_count(0)
+for k in range(3):
+    for j in range(4 + k):
+        add_point((float(j), float(k), sin(float(j))))
+pts = [0] * 8
+start = base
+for k in range(3):
+    m = 4 + k
+    for j in range(m):
+        pts[j] = start + j
+    add_curve(pts, m)
+    start += m
+add_curve((add_point((9, 9, 9)), add_point((9, 9, 10))))
+"""
+EDIT_CURVES_CODE = """a = add_point((5, 0, 0))
+b = add_point((5, 1, 0))
+add_curve((a, b))
+remove_curve(0)
+extend_curve(1, (4, 2, 0))
+remove_point(2)
+"""
 CURVES_CODE = """
 n = 0
 for p in curve_points(0, @index, 64):
@@ -1501,6 +1570,13 @@ class TestBlenderTypes(unittest.TestCase):
         {"name": "grid_types", "input": "grid", "run_over": "POINTS", "code": GRID_TYPES_CODE},
         {"name": "remove_curve_on_mesh", "input": "grid", "run_over": "POINTS",
          "code": "remove_curve(0)\n"},
+        {"name": "grow_curves", "input": "curves_w", "run_over": "CURVES", "code": GROW_CODE},
+        {"name": "build_curves", "input": "empty", "run_over": "GEOMETRY", "code": BUILD_CURVES_CODE},
+        {"name": "edit_curves", "input": "curves_k", "run_over": "GEOMETRY", "code": EDIT_CURVES_CODE},
+        {"name": "add_curve_on_mesh", "input": "grid", "run_over": "POINTS",
+         "code": "if @index == 0:\n    add_curve((0, 1))\n"},
+        {"name": "lone_point_on_curves", "input": "curves", "run_over": "GEOMETRY",
+         "code": "add_point((0, 0, 0))\nadd_curve((0, 1))\n"},
         {"name": "outputs", "input": "grid", "run_over": "POINTS", "code": OUTPUTS_CODE,
          "store": [["distance", "FLOAT", "POINT", "dist"], ["n", "INT", "POINT", "n"],
                    ["spin", "QUATERNION", "POINT", "spin"], ["unused_too", "FLOAT", "POINT", "u"]]},
@@ -1626,6 +1702,39 @@ class TestBlenderTypes(unittest.TestCase):
     def test_remove_curve_needs_curves(self):
         r = self.r["remove_curve_on_mesh"]
         self.assertIn("remove_curve() needs curves", " ".join(r["warnings"]))
+
+    def curves_with(self, name, values):
+        geo = self.curves_input()
+        if name == "w":
+            geo.points["w"] = np.array(values, np.float32)
+        else:
+            geo.curve_attrs["k"] = np.array(values, np.int32)
+        return geo
+
+    def test_grow_curves(self):
+        r = self.ok("grow_curves")
+        out = run(toast.build(GROW_CODE, run_over="curves"), [self.curves_with("w", range(1, 8))])
+        self.assertEqual(r["curves"], [len(c) for c in out.curves])
+        self.assert_bits(r["P"], out.points["position"])
+        self.assert_bits(r["attrs"]["w"]["values"], out.points["w"])
+
+    def test_build_curves_from_nothing(self):
+        r = self.ok("build_curves")
+        out = run(toast.build(BUILD_CURVES_CODE, run_over="geometry"), [Geometry()])
+        self.assertEqual(r["curves"], [len(c) for c in out.curves])
+        self.assert_bits(r["P"], out.points["position"])
+        self.assertEqual(r["curve_types"], ["POLY"] * 4)
+
+    def test_edit_curves(self):
+        r = self.ok("edit_curves")
+        out = run(toast.build(EDIT_CURVES_CODE, run_over="geometry"), [self.curves_with("k", [10, 20])])
+        self.assertEqual(r["curves"], [len(c) for c in out.curves])
+        self.assert_bits(r["P"], out.points["position"])
+        self.assertEqual(r["attrs"]["k"]["values"], out.curve_attrs["k"].tolist())
+
+    def test_curve_errors_in_blender(self):
+        self.assertIn("add_curve() needs curves", " ".join(self.r["add_curve_on_mesh"]["warnings"]))
+        self.assertIn("is already in a curve", " ".join(self.r["lone_point_on_curves"]["warnings"]))
 
 
 

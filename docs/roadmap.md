@@ -8,25 +8,16 @@ scheduled. For what works today, see the [guide](guide.md) and the [examples](..
 These are the ones that block whole kinds of work. Curves, volumes, Grease Pencil and
 particles come first: Blender users need all four.
 
-### Curves: new points and new curves
+### Curves: new points and new curves (done in 0.14)
 
-**Today:** Run Over Points and Curves read and move curve points, and `remove_point` /
-`remove_curve` delete them. Nothing can add a point to a curve or make a new curve, so strands are
-made with Blender nodes first (the hair example) and growing curves are impossible: strokes, vines,
-trails, strange attractors, lightning, field lines.
+`add_curve()` makes curves from points added in the run, and `extend_curve()` grows a curve at
+its tip (kernel ABI 6). The trails example uses both. Still to do:
 
-**Plan:**
-- `add_curve((a, b, c, ...))` in Run Over Geometry and Curves: a new curve through points made with
-  `add_point()` (handles or point numbers, as `add_face` takes), plus `add_curve_point(curve,
-  position)` to extend a curve at its tip. Curve type poly first; `set_curve_attr()` for
-  `cyclic`, `resolution` and the user's own curve attributes.
-- Inserting a point into a curve where it is (`insert_curve_point(curve, after, position)`), so a
-  growing line stays one curve without rebuilding it. The same idea for mesh edges is in
-  "Run Over Geometry in parallel" below.
-- ABI: new commands in `ToastHost` (`cmd_add_curve`, `cmd_add_curve_point`); the node rebuilds
-  the curve offsets once after the run, in element order, as it does for meshes. The harness must
-  match it.
-- Example to prove it: a growing vine, or particles that leave curve trails.
+- Inserting a point inside a curve where it is (`insert_curve_point(curve, after, position)`),
+  for curves that subdivide as they grow. The same idea for mesh edges is in "Run Over Geometry
+  in parallel" below.
+- Choosing the type of new curves (Bezier, NURBS) and writing curve attributes of new curves
+  (`set_curve_attr()`); today new curves are poly with default curve attributes.
 
 ### Volumes
 
@@ -95,8 +86,8 @@ what it would show off and what it needs that Toast doesn't have yet, if anythin
 | **Crowd on terrain**: 50000 instances walking a flow field, held to the ground | Run Over Instances, `quat`, `curl_noise`, `ray_cast` to the ground, Selection to freeze stuck ones | Nothing new |
 | **Caustics**: light refracting through a wavy glass sheet onto a floor | Two `ray_cast` bounces per point, a refraction helper; landing points made denser with Points to Volume | Nothing new |
 | **Hydraulic erosion**: droplets carving channels in an `fbm` terrain | Run Over Geometry droplets, or the move/rebuild split from the growth example | Faster with `parallel_range` |
-| **Diffusion-limited aggregation** (lightning, frost) | `nearest_point` on a growing cloud, Run Over Geometry, `output()` into Curve to Mesh | Curves that grow, for strokes |
-| **Ivy crawling over a statue** | Growth in Run Over Geometry, `closest_point` + `ray_cast` to stay on the surface, leaves as instances (`@transform`, `mat4`) | Curves that grow |
-| **Strange attractors** drawn as long strands | Heavy math per step, long histories | Curves that grow, longer lists |
+| **Diffusion-limited aggregation** (lightning, frost) | `nearest_point` on a growing cloud, Run Over Geometry, `add_curve` strokes | Nothing new |
+| **Ivy crawling over a statue** | `extend_curve` growth, `closest_point` + `ray_cast` to stay on the surface, leaves as instances (`@transform`, `mat4`) | Nothing new |
+| **Strange attractors** drawn as long strands | Heavy math per step, `extend_curve` histories | Nothing new |
 | **Smoke** advected through a grid | Volumes | Volumes |
 | **Boiling Grease Pencil lines** | Strokes that wiggle and grow | Grease Pencil |

@@ -31,7 +31,7 @@ typedef __SIZE_TYPE__ size_t;
 #  define offsetof(type, member) __builtin_offsetof(type, member)
 #endif
 
-#define TOAST_ABI_VERSION 5
+#define TOAST_ABI_VERSION 6
 
 #if defined(_WIN32)
 #  define TOAST_EXPORT extern "C" __declspec(dllexport)
@@ -110,6 +110,10 @@ typedef struct ToastAttr {
  * - ncurves / curve_points: curve count of `input`'s curves, and the points of a curve in order
  *   (like primpoints).
  * - cmd_remove_curve: queues removing a curve with its points (curves only).
+ * - cmd_add_curve: queues a new curve through `n` points (indices or handles), in order (curves
+ *   only). Points from cmd_add_point on curves must each be in exactly one new curve.
+ * - cmd_extend_curve: queues a new point at the tip of an existing curve (curves only) and returns
+ *   its handle, like cmd_add_point. It copies the tip point's other attributes.
  * Commands are merged sorted by (src, emission order), so results don't depend on threads. */
 typedef struct ToastHost {
   void *self;
@@ -144,6 +148,11 @@ typedef struct ToastHost {
   int64_t (*ncurves)(void *self, int32_t input);
   int32_t (*curve_points)(void *self, int32_t input, int64_t curve, int32_t max, int64_t *out);
   void (*cmd_remove_curve)(void *self, ToastCmdBuffer *cmd, int64_t src, int64_t curve);
+  /* ABI 6. */
+  void (*cmd_add_curve)(
+      void *self, ToastCmdBuffer *cmd, int64_t src, const int64_t *pts, int32_t n);
+  int64_t (*cmd_extend_curve)(
+      void *self, ToastCmdBuffer *cmd, int64_t src, int64_t curve, const float *pos3);
 } ToastHost;
 
 typedef struct ToastCtx {
@@ -611,6 +620,15 @@ inline int32_t curve_points(
 inline void remove_curve(const ToastCtx *c, int64_t src, int64_t curve)
 {
   c->host->cmd_remove_curve(c->host->self, c->cmd, src, curve);
+}
+template<typename... Points> inline void add_curve(const ToastCtx *c, int64_t src, Points... pts)
+{
+  const int64_t list[] = {int64_t(pts)...};
+  c->host->cmd_add_curve(c->host->self, c->cmd, src, list, int32_t(sizeof...(pts)));
+}
+inline int64_t extend_curve(const ToastCtx *c, int64_t src, int64_t curve, float3 pos)
+{
+  return c->host->cmd_extend_curve(c->host->self, c->cmd, src, curve, &pos.x);
 }
 inline int32_t point_faces(const ToastCtx *c, int32_t input, int64_t pt, int32_t max, int64_t *out)
 {
@@ -1728,5 +1746,17 @@ template<typename T, int N> struct Array {
     return (k >= 0 && k < N) ? v[k] : v[N];
   }
 };
+
+/* add_curve(points, count): a curve through the first `count` point numbers of a list. */
+template<int N>
+inline void add_curve_list(const ToastCtx *c, int64_t src, const Array<int32_t, N> &pts, int32_t n)
+{
+  n = n < 0 ? 0 : (n > N ? N : n);
+  int64_t list[N > 0 ? N : 1];
+  for (int32_t k = 0; k < n; k++) {
+    list[k] = pts.v[k];
+  }
+  c->host->cmd_add_curve(c->host->self, c->cmd, src, list, n);
+}
 
 }  // namespace toast
