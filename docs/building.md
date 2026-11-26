@@ -13,7 +13,7 @@ page has the short version and what is specific to Toast.
 | --- | --- | --- | --- |
 | Toast node | yes | yes | not yet |
 | Built-in kernel compiler | yes | not yet: uses Xcode's `clang++` | not yet |
-| C++ node plugins (Bricker) | yes | yes (new, report problems) | not yet |
+| C++ node plugins (Bricker) | yes | yes | not yet |
 | Portable package script | yes | no | no |
 
 ## macOS
@@ -140,7 +140,7 @@ After editing `docs/guide.md`, regenerate the HTML guide with `python3 docs/buil
 
 ## Problems
 
-If the build or the tests fail, open an issue on
-[varomix/toast](https://github.com/varomix/toast/issues) with the output. On macOS, the parts
-most likely to need fixes are the plugin loading and the bit-for-bit noise tests, since they
-have not run on a Mac yet.
+Both Linux x64 and macOS on Apple silicon pass the full test suite (on macOS, the comparison
+of the built-in and external compilers is skipped, since there is no built-in compiler yet) and
+the Bricker regression test. If the build or the tests fail for you, open an issue on
+[varomix/toast](https://github.com/varomix/toast/issues) with the output.
