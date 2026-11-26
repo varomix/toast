@@ -1,6 +1,6 @@
 # Toast examples
 
-Seven .blend files that show what Toast does, most of them inside Blender's Simulation Zones, and
+Ten .blend files that show what Toast does, most of them inside Blender's Simulation Zones, and
 how far it goes. Open one in the Toast build of Blender, allow Auto Run Python Scripts (or trust
 the file), and press Play. Each file has a text named **README** with what to look at and what to
 try. The Toast code is in the files as texts, and in [`src/`](src) for reading here.
@@ -14,6 +14,9 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
 | [05_fluid](05_fluid.blend) | A dam break around an obstacle | Three chained Toast nodes in substeps, position-based fluid, walls as mirrored neighbors, collisions with a mesh on Input 1 that particles never cross |
 | [06_mandelbulb](06_mandelbulb.blend) | A fractal ray-marched by 160000 points | Heavy per-element math, helpers, a library (`toast_lib.fractal`), `remove_point`, `output()` |
 | [07_tree](07_tree.blend) | A tree that grows with the timeline | Run Over Geometry building a whole tree, lists as a stack, quaternions, a library (`toast_lib.tree`), `set_point_attr` on new points |
+| [08_occlusion](08_occlusion.blend) | Ambient occlusion and dust, ray-traced on every point, every frame | `ray_cast` in a loop (48 rays per point) against the node's own geometry, Collection Info as the scene, `fbm` |
+| [09_ripples](09_ripples.blend) | Balls dropping into and skimming over a pool | Wave equation with `point_neighbors` in substeps, `ray_cast` up into the balls (Input 1) to push the water down |
+| [10_metaballs](10_metaballs.blend) | Blobs that melt together and apart | Marching cubes in Toast (Run Over Geometry): a 4096-entry table in a library, lists as layer caches so cubes share points, `add_point`/`add_face` building a closed mesh every frame |
 
 <p>
   <img src="images/01_flocking.png" width="32%">
@@ -22,6 +25,11 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
   <img src="images/04_differential_growth.png" width="32%">
   <img src="images/05_fluid.png" width="32%">
   <img src="images/07_tree.png" width="32%">
+</p>
+<p>
+  <img src="images/08_occlusion.png" width="32%">
+  <img src="images/09_ripples.png" width="32%">
+  <img src="images/10_metaballs.png" width="32%">
 </p>
 <img src="images/06_mandelbulb.png" width="40%">
 
@@ -40,6 +48,11 @@ included, measured with `run_examples.py` below. Default settings first, then sc
 | Fluid | 11664 particles x 6 substeps | 126 | 50000 particles x 6 substeps | 208 |
 | Mandelbulb | 400 x 400 rays | 31 | 1000 x 1000 rays | 195 |
 | Tree | 4373 points | 2 | depth 9: 131000 mesh points | 12 |
+| Ambient occlusion\* | 64317 points x 48 rays | 82 | 192 rays | 244 |
+| Ripples\* | 76800 points x 4 steps | 3.7 | 750000 points x 4 steps | 13.5 |
+| Metaballs\* | 8 balls, 56^3 cubes, one core | 3.5 | 60^3 cubes, lower threshold (bigger blobs) | 4.3 |
+
+\* Measured on an Apple M3 Max (14 cores, built-in compiler) instead.
 
 Toast runs the code once per point, curve or instance, in parallel, except with Run Over
 Geometry, which runs it once, so on one core. The differential growth file shows the way around
@@ -64,7 +77,8 @@ edge in place.
   a float, so a vec3 written by an earlier node read wrong, silently. The node now warns about
   it and names the type (`fluid/relax.py` declares `@previous: vec3`).
 - **Lists hold up to 4096 values** and `nearby_points()` visits up to 4096 points. The hair keeps
-  32 points per strand, the tree a stack of 512 branches.
+  32 points per strand, the tree a stack of 512 branches. The metaballs stop at 60^3 cubes: a layer of
+  61 x 61 corners is the most a list holds, and the triangle table fills one list exactly.
 - **Run Over Geometry is sequential**, see above.
 - **Curves can't get new points** (only removed), so hair strands are made with Blender nodes and
   simulated with Toast.

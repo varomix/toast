@@ -632,6 +632,213 @@ def tree():
     save("07_tree")
 
 
+def occlusion():
+    new_file(240)
+    scene = bpy.context.scene
+    scene.world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.25, 0.27, 0.32, 1)
+    bpy.context.preferences.edit.keyframe_new_interpolation_type = "LINEAR"
+    # The objects Toast shades. Their collection is excluded from the view layer: the Occlusion
+    # object reads them with Collection Info and shows them.
+    parts = bpy.data.collections.new("Sculpture parts")
+    scene.collection.children.link(parts)
+
+    def part(name, levels=0, simple=False):
+        obj = bpy.context.active_object
+        obj.name = name
+        for c in obj.users_collection:
+            c.objects.unlink(obj)
+        parts.objects.link(obj)
+        if levels:
+            sd = obj.modifiers.new("Subdivision", "SUBSURF")
+            sd.levels = levels
+            if simple:
+                sd.subdivision_type = "SIMPLE"
+        return obj
+
+    bpy.ops.mesh.primitive_monkey_add(size=1.6, location=(0, 0, 0.62), rotation=(math.radians(-10), 0, 0))
+    monkey = part("Monkey", 3)
+    for frame, angle in ((1, 0), (241, 360)):
+        monkey.rotation_euler.z = math.radians(angle)
+        monkey.keyframe_insert("rotation_euler", index=2, frame=frame)
+    bpy.ops.mesh.primitive_torus_add(major_radius=0.55, minor_radius=0.18, location=(1.9, 0.5, 0.18),
+                                     major_segments=64, minor_segments=24)  # fmt: skip
+    part("Ring", 1)
+    for k, (x, y, s) in enumerate(((-1.9, 0.3, 0.5), (-1.45, -0.55, 0.32), (-2.4, -0.6, 0.25))):
+        bpy.ops.mesh.primitive_cube_add(size=s, location=(x, y, s / 2), rotation=(0, 0, 0.4 * k + 0.3))
+        part(f"Block {k + 1}", 4, simple=True)
+    bpy.ops.mesh.primitive_grid_add(x_subdivisions=180, y_subdivisions=120, size=1, location=(0, 0.6, 0))
+    part("Ground").scale = (9, 6, 1)
+    bpy.context.view_layer.layer_collection.children[parts.name].exclude = True
+
+    obj = mesh_object("Occlusion")
+    t = Tree(obj, "Occlusion")
+    coll = t.node("GeometryNodeCollectionInfo", (-600, 0))
+    coll.inputs["Collection"].default_value = parts
+    coll.transform_space = "RELATIVE"
+    realize = t.node("GeometryNodeRealizeInstances", (-400, 0))
+    t.link(coll.outputs[0], realize.inputs["Geometry"])
+    smooth = t.node("GeometryNodeSetShadeSmooth", (-200, 0))
+    t.link(realize.outputs[0], smooth.inputs["Mesh"])
+    ao = t.toast("occlusion/occlusion", (0, 0))
+    t.link(smooth.outputs[0], ao.inputs["Geometry"])
+    setmat = t.node("GeometryNodeSetMaterial", (300, 0))
+    setmat.inputs["Material"].default_value = material("Occlusion", attribute="Color", roughness=0.75)
+    t.link(ao.outputs[0], setmat.inputs["Geometry"])
+    t.finish(setmat.outputs[0], 500)
+    obj.data.materials.append(setmat.inputs["Material"].default_value)
+
+    camera((0, -7.2, 3.4), (0, 0.2, 0.45), lens=40)
+    light("SUN", (0, 0, 10), 1.5, rotation=(50, 0, 30), size=10)
+    note([
+        "Ambient occlusion and dust, ray-traced by Toast on every point, every frame.",
+        "Press Play: the monkey turns, and its contact shadow and dust move with it.",
+        "",
+        "occlusion.py (Points)  per point: `rays` rays over the hemisphere around the normal,",
+        "                       ray_cast() against the whole scene (its own Geometry, input 0);",
+        "                       the share that escapes is how open the point is (dark in",
+        "                       creases and under objects); rays escaping upward bring dust",
+        "",
+        "The parts (Monkey, Ring, Blocks, Ground) are in the 'Sculpture parts' collection,",
+        "which is excluded: the Occlusion object reads them with Collection Info. Include the",
+        "collection to edit them; the shading follows.",
+        "",
+        "Try: rays 16 (fast) to 256 (smooth), reach, contrast, dust, dust_start/dust_end, drift_scale.",
+    ])
+    save("08_occlusion")
+
+
+def ripples():
+    new_file(300)
+    bpy.context.preferences.edit.keyframe_new_interpolation_type = "LINEAR"
+    # Balls that hit the water: Input 1 of the simulation.
+    balls = bpy.data.collections.new("Balls")
+    bpy.context.scene.collection.children.link(balls)
+    ball_mat = material("Ball", color=(0.95, 0.35, 0.08), roughness=0.3)
+
+    def ball(name, radius, keys):
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=radius, segments=48, ring_count=24)
+        b = bpy.context.active_object
+        b.name = name
+        for c in b.users_collection:
+            c.objects.unlink(b)
+        balls.objects.link(b)
+        bpy.ops.object.shade_smooth()
+        b.data.materials.append(ball_mat)
+        for frame, loc in keys:
+            b.location = loc
+            b.keyframe_insert("location", frame=frame)
+
+    # One drops in, one skims across, one bobs up and down in a corner.
+    # Their undersides go at most ~0.2 below the surface: deeper, they act as huge pistons.
+    ball("Drop", 0.45, [(1, (-1.2, 0.8, 3.0)), (16, (-1.2, 0.8, 0.27)), (30, (-1.2, 0.8, 0.42)),
+                        (60, (-1.2, 0.8, 0.38))])  # fmt: skip
+    ball("Skimmer", 0.3, [(70, (-5.0, -1.6, 0.24)), (190, (5.0, -0.4, 0.24))])
+    ball("Bobber", 0.35, [(f, (2.3, 1.6, 0.42 if (f // 12) % 2 else 0.26)) for f in range(1, 301, 12)])
+
+    obj = mesh_object("Water")
+    t = Tree(obj, "Ripples")
+    grid = t.node("GeometryNodeMeshGrid", (-200, 0), Size_X=8.0, Size_Y=6.0, Vertices_X=320, Vertices_Y=240)
+    coll = t.node("GeometryNodeCollectionInfo", (200, -350))
+    coll.inputs["Collection"].default_value = balls
+    coll.transform_space = "RELATIVE"
+    realize = t.node("GeometryNodeRealizeInstances", (400, -350))
+    t.link(coll.outputs[0], realize.inputs["Geometry"])
+    sin, sout = t.sim_zone(100, 1100)
+    rin, rout = t.repeat_zone(300, 900, 4)
+    rin.label = "Steps per frame"
+    step = t.toast("ripples/step", (600, 0))
+    t.link(grid.outputs["Mesh"], sin.inputs["Geometry"])
+    t.link(sin.outputs["Geometry"], rin.inputs["Geometry"])
+    t.link(rin.outputs["Geometry"], step.inputs["Geometry"])
+    t.link(realize.outputs[0], step.inputs["Input 1"])
+    t.link(step.outputs[0], rout.inputs["Geometry"])
+    t.link(rout.outputs["Geometry"], sout.inputs["Geometry"])
+    smooth = t.node("GeometryNodeSetShadeSmooth", (1300, 0))
+    t.link(sout.outputs["Geometry"], smooth.inputs["Mesh"])
+    shade = t.toast("ripples/shade", (1500, 0))
+    t.link(smooth.outputs[0], shade.inputs["Geometry"])
+    setmat = t.node("GeometryNodeSetMaterial", (1750, 0))
+    setmat.inputs["Material"].default_value = material("Water", attribute="Color", roughness=0.08)
+    t.link(shade.outputs[0], setmat.inputs["Geometry"])
+    t.finish(setmat.outputs[0], 1950)
+    obj.data.materials.append(setmat.inputs["Material"].default_value)
+
+    # The pool's rim.
+    bpy.ops.mesh.primitive_cube_add(location=(0, 0, -0.1), scale=(4.15, 3.15, 0.2))
+    rim = bpy.context.active_object
+    rim.name = "Pool"
+    rim.modifiers.new("Rim", "WIREFRAME").thickness = 0.3
+    rim.data.materials.append(material("Stone", color=(0.55, 0.52, 0.48), roughness=0.8))
+
+    camera((0, -8.6, 5.6), (0, 0.2, 0), lens=35)
+    light("SUN", (0, 0, 10), 4.0, rotation=(50, 0, 25), size=2)
+    light("AREA", (-4, -3, 5), 600, rotation=(45, 0, -50), size=6, color=(0.7, 0.85, 1.0))
+    note([
+        "Ripple pool: a 320 x 240 grid of water (76800 points) and three balls. Press Play.",
+        "",
+        "step.py   (Points)  one step of the wave equation: each point's height accelerates",
+        "                    toward the average of its point_neighbors(); a Repeat Zone runs it",
+        "                    4 times per frame. Where a ball (Input 1, the Balls collection)",
+        "                    is in the water, ray_cast() finds its underside and pushes the",
+        "                    surface down to it",
+        "shade.py  (Points)  deep blue, lighter where steep, foam where it moves fast",
+        "",
+        "Animate or move the balls: the water follows. Try: stiffness (wave speed, up to 1.0),",
+        "damping, Grid vertices 1000 x 750 (750000 points).",
+    ])
+    save("09_ripples")
+
+
+def metaballs():
+    new_file(480)
+    obj = mesh_object("Metaballs")
+    t = Tree(obj, "Metaballs")
+    library("metaballs")
+    poly = t.toast("metaballs/polygonize", (0, 0))
+    t.link(t.input.outputs[0], poly.inputs["Geometry"])
+    smooth = t.node("GeometryNodeSetShadeSmooth", (250, 0))
+    t.link(poly.outputs[0], smooth.inputs["Mesh"])
+    shade = t.toast("metaballs/shade", (450, 0))
+    t.link(smooth.outputs[0], shade.inputs["Geometry"])
+    # Both nodes read the same balls.
+    for k, (name, value) in enumerate((("balls", 8), ("seed", 0), ("spread", 1.3), ("speed", 1.0))):
+        if isinstance(value, int):
+            v = t.node("FunctionNodeInputInt", (-300, -200 - 120 * k), label=name.title())
+            v.integer = value
+        else:
+            v = t.node("ShaderNodeValue", (-300, -200 - 120 * k), label=name.title())
+            v.outputs[0].default_value = value
+        t.link(v.outputs[0], poly.inputs[name])
+        t.link(v.outputs[0], shade.inputs[name])
+    setmat = t.node("GeometryNodeSetMaterial", (700, 0))
+    setmat.inputs["Material"].default_value = material("Goo", attribute="Color", roughness=0.18)
+    t.link(shade.outputs[0], setmat.inputs["Geometry"])
+    t.finish(setmat.outputs[0], 900)
+    obj.data.materials.append(setmat.inputs["Material"].default_value)
+
+    bpy.ops.mesh.primitive_plane_add(size=30, location=(0, 0, -1.7))
+    bpy.context.active_object.data.materials.append(material("Floor", color=(0.06, 0.06, 0.07), roughness=0.6))
+    camera((0, -7.5, 1.6), (0, 0, 0), lens=45)
+    light("SUN", (0, 0, 10), 3.5, rotation=(40, 0, 30), size=3)
+    light("AREA", (-4, -3, 3), 500, rotation=(55, 0, -55), size=5, color=(0.7, 0.8, 1.0))
+    note([
+        "Metaballs: marching cubes written in Toast. Press Play.",
+        "",
+        "polygonize.py (Geometry)  sums the balls' fields at the corners of a 56^3 grid and",
+        "                          builds the surface with add_point/add_face, one z layer at",
+        "                          a time. Lists hold two layers of field values and the",
+        "                          surface points made on each cube edge, so neighboring cubes",
+        "                          share points: a closed, connected mesh, every frame",
+        "shade.py      (Points)    blends the balls' colors by how much each pulls on a point",
+        "toast_lib.metaballs       the 256 x 16 triangle table (4096 entries, Toast's largest",
+        "                          list), the balls' paths and colors",
+        "",
+        "The Balls, Seed, Spread and Speed values feed both nodes. Try: 16 balls, resolution",
+        "60 (the most the lists hold), threshold.",
+    ])
+    save("10_metaballs")
+
+
 EXAMPLES = {
     "flocking": flocking,
     "reaction_diffusion": reaction_diffusion,
@@ -640,6 +847,9 @@ EXAMPLES = {
     "fluid": fluid,
     "mandelbulb": mandelbulb,
     "tree": tree,
+    "occlusion": occlusion,
+    "ripples": ripples,
+    "metaballs": metaballs,
 }
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@
 
 <p align="center">
   Python-syntax kernels for Blender geometry nodes, compiled to native code.<br>
-  <a href="docs/guide.md">User guide</a> · <a href="examples">Examples</a> · <a href="docs/building.md">Building</a> ·
+  <a href="docs/guide.md">User guide</a> · <a href="examples">Examples</a> · <a href="docs/building.md">Building</a> · <a href="docs/roadmap.md">Roadmap</a> ·
   <a href="https://github.com/varomix/blender/tree/toast">Blender fork</a>
 </p>
 
