@@ -180,7 +180,22 @@ The hand C++ node is the `toast_plugin_noise_displace` plugin in the fork, calli
 and the noise code inlines. Toast's fixed cost per evaluation (kernel lookup, parameters, binding,
 ~0.5 ms) shows on small meshes.
 
-Compile of this kernel: ~0.1 s with the fork's built-in compiler (0.4 s with g++); reopening a
+Reaction-diffusion step (2026-11-26, built-in compiler; `examples/src/reaction_diffusion/step.py`:
+`point_neighbors()` and a few reads per point) vs the same with nodes, Blur Attribute for the neighbor average,
+`tests/bench_reaction_diffusion.py`. The node reuses its neighbor table while the topology stays
+the same (steps of a Repeat Zone, frames of a simulation): about 4 ms to build at 164k points
+when it changes.
+
+| Points | Threads | Toast | Node tree | Toast vs nodes |
+| --- | --- | --- | --- | --- |
+| 41k | all | 0.23 ms | 3.0 ms | 12.9x |
+| 41k | 1 | 0.82 ms | 7.3 ms | 8.9x |
+| 164k | all | 0.89 ms | 7.1 ms | 7.9x |
+| 164k | 1 | 4.8 ms | 34.8 ms | 7.2x |
+| 655k | all | 2.8 ms | 25.4 ms | 9.1x |
+| 655k | 1 | 14.5 ms | 204.1 ms | 14.1x |
+
+Compile of the noise displace kernel: ~0.1 s with the fork's built-in compiler (0.4 s with g++); reopening a
 file with the kernel cached costs a few ms.
 Read attributes are bound as views of Blender's arrays (copies only for snapshots, type
 conversions and an input-0 KD-tree, made in parallel). Before that change the 2.6M-point case

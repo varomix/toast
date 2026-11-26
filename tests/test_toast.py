@@ -1630,6 +1630,25 @@ class TestBlenderTypes(unittest.TestCase):
 
 
 @unittest.skipUnless(_blender_has_toast_node(), "Blender with GeometryNodeToast not found")
+class TestBlenderNeighborCache(unittest.TestCase):
+    """The node reuses point_neighbors() tables by topology: never across a topology change."""
+
+    def test_topology_change_rebuilds_the_table(self):
+        repo = Path(__file__).resolve().parents[1]
+        script = Path(__file__).resolve().parent / "blender_neighbors_cache_check.py"
+        proc = subprocess.run(
+            [BLENDER, "-b", "--factory-startup", "--enable-autoexec", "--python-exit-code", "1",
+             "--python", str(script), "--", str(repo)],
+            capture_output=True, text=True, timeout=300,
+        )  # fmt: skip
+        line = [ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")]
+        if proc.returncode != 0 or not line:
+            raise AssertionError(proc.stdout[-3000:] + proc.stderr[-3000:])
+        frames = json.loads(line[0][len("RESULT "):])["frames"]
+        self.assertEqual(frames, [{"points": 48, "ok": True}] * 3)
+
+
+@unittest.skipUnless(_blender_has_toast_node(), "Blender with GeometryNodeToast not found")
 class TestBlenderEditor(unittest.TestCase):
     """Templates, error locations and compile status (headless)."""
 

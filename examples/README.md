@@ -33,7 +33,7 @@ included, measured with `run_examples.py` below. Default settings first, then sc
 | Example | Default | ms/frame | Scaled up | ms/frame |
 | --- | --- | --- | --- | --- |
 | Flocking | 3000 boids | 5 | 100000 boids | 30 |
-| Reaction-diffusion | 40962 points x 24 steps | 43 | 163842 points x 24 steps | 167 |
+| Reaction-diffusion | 40962 points x 24 steps | 5.5 | 163842 points x 24 steps | 13 |
 | Hair | 4252 strands, 102000 points | 145 | 21237 strands, 510000 points | 208 |
 | Differential growth, one core | 12000 points x 4 steps | 9 to 50 | 21600 points x 16 steps | 129 |
 | Differential growth, all cores | 12000 points x 4 steps | 6 to 25 | 21600 points x 16 steps | 54 |
