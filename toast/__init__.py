@@ -11,7 +11,7 @@ with plain Python (see ``harness.py``). The Blender add-on registration comes la
 bl_info = {
     "name": "Toast",
     "author": "varomix",
-    "version": (0, 12, 0),
+    "version": (0, 13, 0),
     "blender": (5, 3, 0),
     "location": "Geometry Nodes > Add > Toast",
     "description": "Python-syntax kernels for the Toast geometry node, compiled to native code",
