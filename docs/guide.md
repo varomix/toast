@@ -13,7 +13,7 @@ n = noise(@position * param("freq", 4.0))
 
 ## Setting up
 
-1. Use the Blender build from the `toast` fork branch, and enable the **Toast** add-on
+1. Use the Blender build from the `toast` fork branch ([building it](building.md)), and enable the **Toast** add-on
    (Preferences > Add-ons).
 2. Allow **Auto Run Python Scripts** (Preferences > Save & Load), or trust the file. Toast code
    in a `.blend` runs native code, so it follows the same rule as Python drivers.
