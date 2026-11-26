@@ -1518,6 +1518,7 @@ remove_curve(0)
 extend_curve(1, (4, 2, 0))
 remove_point(2)
 """
+GP_DRAW_CODE = "add_curve((add_point((0, 0, 5)), add_point((1, 0, 5))))\n"
 CURVES_CODE = """
 n = 0
 for p in curve_points(0, @index, 64):
@@ -1575,6 +1576,11 @@ class TestBlenderTypes(unittest.TestCase):
         {"name": "edit_curves", "input": "curves_k", "run_over": "GEOMETRY", "code": EDIT_CURVES_CODE},
         {"name": "add_curve_on_mesh", "input": "grid", "run_over": "POINTS",
          "code": "if @index == 0:\n    add_curve((0, 1))\n"},
+        {"name": "gp_points", "input": "gp", "run_over": "POINTS", "code": CURVES_POINTS_CODE},
+        {"name": "gp_grow", "input": "gp_w", "run_over": "CURVES", "code": GROW_CODE},
+        {"name": "gp_draw", "input": "gp", "run_over": "GEOMETRY", "code": GP_DRAW_CODE},
+        {"name": "gp_attrs", "input": "gp", "run_over": "POINTS",
+         "code": "@vertex_color: vec4 = (1, 0.5, 0, 1)\n@opacity: float = 0.25\n@radius = 0.03\n"},
         {"name": "lone_point_on_curves", "input": "curves", "run_over": "GEOMETRY",
          "code": "add_point((0, 0, 0))\nadd_curve((0, 1))\n"},
         {"name": "outputs", "input": "grid", "run_over": "POINTS", "code": OUTPUTS_CODE,
@@ -1731,6 +1737,34 @@ class TestBlenderTypes(unittest.TestCase):
         self.assertEqual(r["curves"], [len(c) for c in out.curves])
         self.assert_bits(r["P"], out.points["position"])
         self.assertEqual(r["attrs"]["k"]["values"], out.curve_attrs["k"].tolist())
+
+    def test_grease_pencil_points(self):
+        r = self.ok("gp_points")
+        out = run(toast.build(CURVES_POINTS_CODE), [self.curves_input()])
+        self.assertEqual(r["curves"], [3, 4])
+        self.assert_bits(r["P"], out.points["position"])
+        self.assert_bits(r["attrs"]["w"]["values"], out.points["w"])
+
+    def test_grease_pencil_grow(self):
+        r = self.ok("gp_grow")
+        out = run(toast.build(GROW_CODE, run_over="curves"), [self.curves_with("w", range(1, 8))])
+        self.assertEqual(r["curves"], [len(c) for c in out.curves])
+        self.assert_bits(r["P"], out.points["position"])
+        self.assert_bits(r["attrs"]["w"]["values"], out.points["w"])
+
+    def test_grease_pencil_draw(self):
+        # Run Over Geometry draws into the layer: no separate Curves component appears.
+        r = self.ok("gp_draw")
+        out = run(toast.build(GP_DRAW_CODE, run_over="geometry"), [self.curves_input()])
+        self.assertEqual(r["curves"], [3, 4, 2])
+        self.assert_bits(r["P"], out.points["position"])
+
+    def test_grease_pencil_attributes(self):
+        attrs = self.ok("gp_attrs")["attrs"]
+        self.assertEqual(attrs["vertex_color"]["type"], "FLOAT_COLOR")
+        self.assert_bits(attrs["vertex_color"]["values"], [(1, 0.5, 0, 1)] * 7)
+        self.assert_bits(attrs["opacity"]["values"], [0.25] * 7)
+        self.assert_bits(attrs["radius"]["values"], [0.03] * 7)
 
     def test_curve_errors_in_blender(self):
         self.assertIn("add_curve() needs curves", " ".join(self.r["add_curve_on_mesh"]["warnings"]))

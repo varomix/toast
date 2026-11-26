@@ -8,7 +8,8 @@
 
 Each case runs a Toast node on one input ("grid": a 4x3 grid mesh, "curves": two hair curves of
 3 and 4 points, "curves_w" / "curves_k": the same with a point float "w" = 1..7 / a curve int "k"
-= 10, 20, "empty": an empty mesh, dumped as curves, "instances": 4 cube instances on a line) and
+= 10, 20, "gp" / "gp_w": "curves" / "curves_w" turned into one Grease Pencil layer before the
+Toast node and back into curves after it, "empty": an empty mesh, dumped as curves, "instances": 4 cube instances on a line) and
 dumps the output: positions, topology and every attribute, floats as their bits.
 """
 
@@ -35,6 +36,7 @@ LAYOUT = {
     "FLOAT_VECTOR": ("vector", 3, True), "FLOAT2": ("vector", 2, True),
     "FLOAT_COLOR": ("color", 4, True), "QUATERNION": ("value", 4, True),
     "FLOAT4X4": ("value", 16, True),
+    "FLOAT4": ("value", 4, True),
 }  # fmt: skip
 
 
@@ -59,6 +61,8 @@ def make_input(kind):
     if kind == "grid":
         bpy.ops.mesh.primitive_grid_add(x_subdivisions=4, y_subdivisions=3, size=2)
         return bpy.context.active_object
+    if kind.startswith("gp"):
+        kind = "curves" + kind[2:]
     if kind.startswith("curves"):
         curves = bpy.data.hair_curves.new("c")
         curves.add_curves(CURVE_SIZES)
@@ -98,6 +102,11 @@ def build_tree(case):
         tree.links.new(line.outputs[0], inst.inputs["Points"])
         tree.links.new(cube.outputs[0], inst.inputs["Instance"])
         source = inst.outputs[0]
+    if case["input"].startswith("gp"):
+        to_gp = tree.nodes.new("GeometryNodeCurvesToGreasePencil")
+        to_gp.inputs["Instances as Layers"].default_value = False
+        tree.links.new(source, to_gp.inputs[0])
+        source = to_gp.outputs[0]
     tree.links.new(source, node.inputs[0])
     # Toast outputs: "store" = [[output, data type, domain, attribute name], ...] stored with Store
     # Named Attribute; "delete" = a Boolean output used as Delete Geometry's selection.
@@ -116,6 +125,11 @@ def build_tree(case):
         tree.links.new(last, delete.inputs["Geometry"])
         tree.links.new(node.outputs[case["delete"]], delete.inputs["Selection"])
         last = delete.outputs[0]
+    if case["input"].startswith("gp"):
+        back = tree.nodes.new("GeometryNodeGreasePencilToCurves")
+        back.inputs["Layers as Instances"].default_value = False
+        tree.links.new(last, back.inputs[0])
+        last = back.outputs[0]
     tree.links.new(last, o.inputs[0])
     return tree, node
 
@@ -128,7 +142,7 @@ def dump(obj, kind):
         mesh.attributes["position"].data.foreach_get("vector", pos)
         return {"P": bits(pos), "faces": [list(f.vertices) for f in mesh.polygons],
                 "attrs": dump_attributes(mesh.attributes, ("position",))}  # fmt: skip
-    if kind.startswith("curves") or kind == "empty":
+    if kind.startswith(("curves", "gp")) or kind == "empty":
         curves = geo.curves
         if curves is None:
             return {"P": [], "curves": [], "attrs": {}}

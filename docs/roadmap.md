@@ -34,18 +34,14 @@ its tip (kernel ABI 6). The trails example uses both. Still to do:
   e.g. Volume Cube or Points to SDF Grid) before Toast writes into it.
 - Example to prove it: smoke advected by Toast (semi-Lagrangian), or a level set that grows.
 
-### Grease Pencil
+### Grease Pencil (done in 0.15)
 
-**Today:** Grease Pencil is ignored; Blender stores its strokes as curves (one curves geometry per
-layer and frame), so most of the machinery exists.
+Points, Curves and Geometry (when the code makes curves) run on every layer's strokes on the
+current frame, and new strokes go into the layer. The sketch example uses it. Still to do:
 
-**Plan:**
-- Run Over Points and Curves visit every layer's drawing on the current frame, as Blender's own
-  nodes do, with Grease Pencil attributes by their Blender names (`@radius`, `@opacity`,
-  `@vertex_color`, `@fill_color`...), and `@layer` read-only.
-- Topology from the curves work above applies to strokes too: new strokes from code, trimming,
-  extending.
-- Example to prove it: hand-drawn strokes that wiggle, boil or grow hair-like fringes.
+- `@layer` (the layer's number) and layer names, so code can treat layers differently; today use
+  the Selection or separate nodes.
+- Reading Grease Pencil on Input 1, and Run Over Faces-like access to fills.
 
 ### Particles and long trails
 
@@ -90,4 +86,3 @@ what it would show off and what it needs that Toast doesn't have yet, if anythin
 | **Ivy crawling over a statue** | `extend_curve` growth, `closest_point` + `ray_cast` to stay on the surface, leaves as instances (`@transform`, `mat4`) | Nothing new |
 | **Strange attractors** drawn as long strands | Heavy math per step, `extend_curve` histories | Nothing new |
 | **Smoke** advected through a grid | Volumes | Volumes |
-| **Boiling Grease Pencil lines** | Strokes that wiggle and grow | Grease Pencil |

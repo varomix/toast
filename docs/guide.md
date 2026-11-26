@@ -74,6 +74,12 @@ With Points, the code runs separately on each part that has points: the mesh, th
 the curves. Input 0 is then the part being run on: `point_count(0)` and `nearby_points(0, ...)`
 see only its points.
 
+**Grease Pencil:** each layer's strokes on the current frame are curves to Toast. Points and
+Curves run on every layer, one layer at a time (input 0 is that layer's strokes), and so does
+Geometry when the code makes curves: `add_curve()` then draws new strokes into each layer.
+Grease Pencil attributes have their Blender names: `@radius`, `@opacity`, `@vertex_color`
+(`vec4`), and your own. Input 1 doesn't read Grease Pencil yet.
+
 Every element runs independently and in parallel. Writing `@name` changes the current element
 only; to change other elements, use `set_point_attr()` and the topology functions below, which
 are applied after the run in element order. The result never depends on the number of threads.

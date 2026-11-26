@@ -1,6 +1,6 @@
 # Toast examples
 
-Eleven .blend files that show what Toast does, most of them inside Blender's Simulation Zones, and
+Twelve .blend files that show what Toast does, most of them inside Blender's Simulation Zones, and
 how far it goes. Open one in the Toast build of Blender, allow Auto Run Python Scripts (or trust
 the file), and press Play. Each file has a text named **README** with what to look at and what to
 try. The Toast code is in the files as texts, and in [`src/`](src) for reading here.
@@ -18,6 +18,7 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
 | [09_ripples](09_ripples.blend) | Balls dropping into and skimming over a pool | Wave equation with `point_neighbors` in substeps, `ray_cast` up into the balls (Input 1) to push the water down |
 | [10_metaballs](10_metaballs.blend) | Blobs that melt together and apart | Marching cubes in Toast (Run Over Geometry): a 4096-entry table in a library, lists as layer caches so cubes share points, `add_point`/`add_face` building a closed mesh every frame |
 | [11_trails](11_trails.blend) | Particles in a flow, each leaving a trail | Curves made by Toast: `add_point` + `add_curve` (Run Over Geometry), `extend_curve` and `remove_point` per curve each frame (Run Over Curves) in a Simulation Zone |
+| [12_sketch](12_sketch.blend) | A Grease Pencil drawing that grows hairs and boils like hand-drawn animation | Toast on Grease Pencil: Run Over Geometry draws new strokes into each layer (`add_curve`), Run Over Points jitters every stroke point and its `@radius` |
 
 <p>
   <img src="images/01_flocking.png" width="32%">
@@ -32,6 +33,7 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
   <img src="images/09_ripples.png" width="32%">
   <img src="images/10_metaballs.png" width="32%">
   <img src="images/11_trails.png" width="32%">
+  <img src="images/12_sketch.png" width="32%">
 </p>
 <img src="images/06_mandelbulb.png" width="40%">
 

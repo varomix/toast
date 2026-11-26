@@ -914,6 +914,71 @@ def trails():
     save("11_trails")
 
 
+def sketch_strokes():
+    """A drawing as point lists on the XZ plane (the camera looks along +Y): a spiral, a flower,
+    waves and a sun."""
+    strokes = []
+    strokes.append([(-2.6 + 0.012 * k * math.cos(k * 0.11), 0, 0.6 + 0.012 * k * math.sin(k * 0.11))
+                    for k in range(110)])  # fmt: skip
+    for petal in range(6):
+        a0 = petal * math.tau / 6
+        pts = []
+        for k in range(41):
+            t = k / 40 * math.pi
+            r = 0.75 * math.sin(t)
+            a = a0 + (t - math.pi / 2) * 0.45
+            pts.append((0.3 + r * math.cos(a), 0, 0.9 + r * math.sin(a)))
+        strokes.append(pts)
+    strokes.append([(0.3 + 0.02 * math.sin(k * 0.3), 0, 0.9 - k * 0.04) for k in range(50)])
+    for row in range(3):
+        strokes.append([(-3.2 + k * 0.08, 0, -1.1 - row * 0.32 + 0.1 * math.sin(k * 0.25 + row))
+                        for k in range(81)])  # fmt: skip
+    strokes.append([(2.5 + 0.42 * math.cos(k * math.tau / 60), 0, 1.4 + 0.42 * math.sin(k * math.tau / 60))
+                    for k in range(61)])  # fmt: skip
+    return strokes
+
+
+def sketch():
+    new_file(120)
+    scene = bpy.context.scene
+    scene.view_settings.view_transform = "Standard"
+    scene.world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.93, 0.9, 0.82, 1)
+    gp = bpy.data.grease_pencils.new("Sketch")
+    drawing = gp.layers.new("Ink").frames.new(1).drawing
+    strokes = sketch_strokes()
+    drawing.add_strokes([len(s) for s in strokes])
+    drawing.attributes["position"].data.foreach_set("vector", [c for s in strokes for p in s for c in p])
+    ink = bpy.data.materials.new("Ink")
+    bpy.data.materials.create_gpencil_data(ink)
+    ink.grease_pencil.color = (0.04, 0.04, 0.07, 1)
+    gp.materials.append(ink)
+    obj = bpy.data.objects.new("Sketch", gp)
+    scene.collection.objects.link(obj)
+
+    t = Tree(obj, "Sketch")
+    fringe = t.toast("sketch/fringe", (0, 0))
+    t.link(t.input.outputs[0], fringe.inputs["Geometry"])
+    boil = t.toast("sketch/boil", (250, 0))
+    t.link(fringe.outputs[0], boil.inputs["Geometry"])
+    t.finish(boil.outputs[0], 500)
+
+    camera((0, -9, 0.2), (0, 0, 0.2), lens=45)
+    note([
+        "Sketch: a Grease Pencil drawing that Toast gives hairs and makes boil. Press Play.",
+        "",
+        "fringe.py (Geometry)  runs once per layer on its strokes: every few points along each",
+        "                      stroke, draws a short hair out to the side (add_point +",
+        "                      add_curve), into the same layer",
+        "boil.py   (Points)    on every stroke point, new hairs included: noise that changes",
+        "                      every `hold` frames moves the points and varies the ink",
+        "                      thickness, like hand-drawn animation",
+        "",
+        "Draw on the Ink layer (Draw mode): new strokes get hairs and boil too.",
+        "Try: hold 1 or 6, jitter, every, hair.",
+    ])
+    save("12_sketch")
+
+
 EXAMPLES = {
     "flocking": flocking,
     "reaction_diffusion": reaction_diffusion,
@@ -926,6 +991,7 @@ EXAMPLES = {
     "ripples": ripples,
     "metaballs": metaballs,
     "trails": trails,
+    "sketch": sketch,
 }
 
 if __name__ == "__main__":
