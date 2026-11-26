@@ -1,4 +1,16 @@
-# Toast frontend
+<p align="center">
+  <img src="images/toast_icon_256.png" alt="Toast" width="160">
+</p>
+
+<h1 align="center">Toast</h1>
+
+<p align="center">
+  Python-syntax kernels for Blender geometry nodes, compiled to native code.<br>
+  <a href="docs/guide.md">User guide</a> · <a href="docs/building.md">Building</a> ·
+  <a href="https://github.com/varomix/blender/tree/toast">Blender fork</a>
+</p>
+
+## Toast frontend
 
 Python goes in, native code pops out. **Using Toast: see [docs/guide.md](docs/guide.md)** (language, builtins, cookbook),
 also as a page to open in a browser: `docs/guide.html` (rebuild it with `python3 docs/build_guide.py`

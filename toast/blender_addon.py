@@ -23,6 +23,7 @@ import traceback
 from pathlib import Path
 
 import bpy
+import bpy.utils.previews
 
 from .build import build, build_source, cache_dir
 from .compiler import LIB_PACKAGE, collect_libraries
@@ -54,6 +55,16 @@ _status = {}
 _followed = {}
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
+ICON_PATH = Path(__file__).resolve().parent / "icons" / "toast.png"
+# bpy.utils.previews collection holding the Toast icon, created in register().
+_icons = None
+
+
+def icon_id():
+    """Icon value of the Toast icon for layouts (0, no icon, if it couldn't be loaded)."""
+    if _icons is None or "toast" not in _icons:
+        return 0
+    return _icons["toast"].icon_id
 # "text: line 3: message" or "text: toast_lib.shapes line 3: message"
 ERROR_RE = re.compile(r"^(?P<text>.*?): (?:(?P<lib>toast_lib\.[\w.]+) )?line (?P<line>\d+): ")
 
@@ -385,7 +396,7 @@ class TOAST_MT_templates(bpy.types.Menu):
 
 
 def _draw_text_templates(self, context):
-    self.layout.menu(TOAST_MT_templates.bl_idname)
+    self.layout.menu(TOAST_MT_templates.bl_idname, icon_value=icon_id())
 
 
 class TOAST_OT_compile(bpy.types.Operator):
@@ -484,6 +495,9 @@ class NODE_PT_toast(bpy.types.Panel):
     def poll(cls, context):
         return _active_toast_node(context) is not None
 
+    def draw_header(self, context):
+        self.layout.label(icon_value=icon_id())
+
     def draw(self, context):
         layout = self.layout
         node = _active_toast_node(context)
@@ -521,6 +535,9 @@ class TEXT_PT_toast(bpy.types.Panel):
     bl_region_type = "UI"
     bl_category = "Toast"
     bl_label = "Toast"
+
+    def draw_header(self, context):
+        self.layout.label(icon_value=icon_id())
 
     @classmethod
     def poll(cls, context):
@@ -574,7 +591,7 @@ class TOAST_AddonPreferences(bpy.types.AddonPreferences):
         layout.prop(self, "follow_active_node")
         layout.label(text=f"Built-in compiler: {'available' if builtin_compiler_available() else 'not in this Blender'}"
                      f", in use: {backend()}")
-        layout.label(text=f"Toast {VERSION}. Kernel cache: {cache_dir()}")
+        layout.label(text=f"Toast {VERSION}. Kernel cache: {cache_dir()}", icon_value=icon_id())
         layout.label(text="Libraries (import toast_lib.<name>): a text named toast_lib.<name>, or")
         for d in library_dirs():
             layout.label(text=f"    {d}")
@@ -590,6 +607,10 @@ def register():
     # Safe to call twice: the add-on can be enabled by default and also registered by scripts.
     if getattr(bpy.types, NODE_PT_toast.__name__, None) is not None:
         return
+    global _icons
+    _icons = bpy.utils.previews.new()
+    if ICON_PATH.exists():
+        _icons.load("toast", str(ICON_PATH), "IMAGE")
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.TEXT_MT_templates.append(_draw_text_templates)
@@ -605,5 +626,9 @@ def unregister():
     if _on_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_on_load)
     bpy.types.TEXT_MT_templates.remove(_draw_text_templates)
+    global _icons
+    if _icons is not None:
+        bpy.utils.previews.remove(_icons)
+        _icons = None
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

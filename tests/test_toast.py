@@ -1580,7 +1580,7 @@ class TestBlenderEditor(unittest.TestCase):
 
     def test_registered(self):
         self.assertEqual(self.r["registered"], {"panel": True, "menu": True,
-                                                "text_templates_menu": True})  # fmt: skip
+                                                "text_templates_menu": True, "icon": True})  # fmt: skip
 
 
 if __name__ == "__main__":

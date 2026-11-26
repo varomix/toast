@@ -12,6 +12,7 @@ Handles the Markdown the guide uses: headings, paragraphs, lists, tables, fenced
 code, bold and links. No dependencies.
 """
 
+import base64
 import html
 import re
 import sys
@@ -226,7 +227,7 @@ a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 2
   border-right: 1px solid var(--line); background: var(--bg-soft);
 }
 .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
-.brand svg { width: 30px; height: 30px; flex: none; }
+.brand img { width: 32px; height: 32px; flex: none; }
 .brand strong { font-size: 20px; letter-spacing: -.01em; }
 .version { color: var(--muted); font-size: 13px; margin: 0 0 22px 40px; }
 .toc { list-style: none; margin: 0; padding: 0; font-size: 14px; }
@@ -255,7 +256,11 @@ main { padding: 48px 56px 120px; max-width: 900px; width: 100%; }
   radial-gradient(120% 140% at 0% 0%, var(--accent-soft) 0%, transparent 60%), var(--panel);
   border: 1px solid var(--line); box-shadow: var(--shadow);
 }
+.hero { position: relative; }
+.hero-icon { position: absolute; top: 22px; right: 28px; width: 104px; height: 104px;
+  filter: drop-shadow(0 6px 14px rgba(120, 60, 10, .25)); }
 .hero h1 { margin: 0 0 6px; font-size: 40px; line-height: 1.1; letter-spacing: -.02em; }
+.hero h1, .hero > p { padding-right: 120px; }
 .hero p { font-size: 17.5px; color: var(--muted); margin: 0 0 22px; max-width: 640px; }
 .hero figure.code { margin-bottom: 0; }
 
@@ -325,6 +330,9 @@ footer { margin-top: 72px; padding-top: 20px; border-top: 1px solid var(--line);
   main { padding: 20px 16px 80px; }
   .hero { padding: 24px 20px; }
   .hero h1 { font-size: 32px; }
+  .hero-icon { width: 64px; height: 64px; top: 18px; right: 16px; }
+  .hero h1, .hero > p { padding-right: 0; }
+  .hero h1 { padding-right: 72px; }
   h2 { font-size: 24px; }
 }
 @media print {
@@ -393,13 +401,17 @@ JS = r"""
 })();
 """
 
-LOGO = """<svg viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="6" width="26" height="22" rx="7"
-fill="#e9b46a"/><path d="M6 13c0-4 4-7 10-7s10 3 10 7v11a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" fill="#f6d9a5"/>
-<path d="M11 17h10M11 21h7" stroke="#b8621b" stroke-width="2" stroke-linecap="round"/></svg>"""
+IMAGES = DOCS.parent / "images"
+
+
+def data_uri(name):
+    """An image of images/ inlined, so the page stays one file that works offline."""
+    return "data:image/png;base64," + base64.b64encode((IMAGES / name).read_bytes()).decode()
 
 
 def build(md_text):
     title, intro, body, toc = convert(md_text)
+    icon = data_uri("toast_icon_128.png")
     toc_html = []
     for level, hid, text in toc:
         toc_html.append(f'<li class="l{level}"><a href="#{hid}">{inline(text)}</a></li>')
@@ -410,13 +422,14 @@ def build(md_text):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Toast guide</title>
 <meta name="description" content="Toast: Python-syntax kernels for Blender geometry nodes, compiled to native code.">
+<link rel="icon" type="image/png" href="{data_uri("toast_icon_32.png")}">
 <style>{CSS}</style>
 </head>
 <body>
 <button class="menu" type="button" aria-label="Contents">☰ Contents</button>
 <div class="layout">
 <nav class="sidebar" aria-label="Contents">
-<div class="brand">{LOGO}<strong>Toast</strong></div>
+<div class="brand"><img src="{icon}" alt=""><strong>Toast</strong></div>
 <p class="version">Guide · version {VERSION}</p>
 <ul class="toc">{"".join(toc_html)}</ul>
 <div class="theme" role="group" aria-label="Theme">
@@ -424,7 +437,7 @@ def build(md_text):
 </div>
 </nav>
 <main>
-<header class="hero"><h1>{html.escape(title)}</h1>{intro}</header>
+<header class="hero"><img class="hero-icon" src="{icon}" alt="Toast"><h1>{html.escape(title)}</h1>{intro}</header>
 {body}
 <footer>Toast {VERSION} · GPL-2.0-or-later · generated from <code>docs/guide.md</code></footer>
 </main>

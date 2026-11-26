@@ -55,5 +55,6 @@ result["registered"] = {
     "panel": hasattr(bpy.types, "TEXT_PT_toast"),
     "menu": hasattr(bpy.types, "TOAST_MT_templates"),
     "text_templates_menu": blender_addon._draw_text_templates in bpy.types.TEXT_MT_templates._dyn_ui_initialize(),
+    "icon": blender_addon._icons is not None and "toast" in blender_addon._icons,
 }
 print("RESULT " + json.dumps(result))
