@@ -186,6 +186,12 @@ Euclidean, detail 0, randomness `r`; distance, color and position outputs). Scal
   deactivations first and only of voxels nothing activates (sets: call order doesn't matter);
   `_apply_voxel_cmds` in the harness is the reference. `@voxel`/`@voxel_size` are bound as the
   attributes `__voxel` and `__voxel_size` of the voxels' point cloud.
+- ABI 10: `grid_sample` mode 3 gives the index nearest to a position (slot type "any");
+  `voxel_cmd` works in every mode (outside Voxels on the transform of the volume's first grid,
+  applied per real geometry after its components ran). Run Over Voxels kernels may bind
+  `__grid_<name>` (the grid on the voxels, read at each voxel's index in the grid's own index
+  space; zeros if missing or of the other kind) and `__n0`..`__n5` (voxel number of the +x, -x,
+  +y, -y, +z, -z neighbor, or -1): signature attrs with `"grid": true`, filled by the node.
 
 ## Measurements (2026-11-24, 32 threads, g++ 14, fork 5.3)
 

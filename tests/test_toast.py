@@ -1930,6 +1930,7 @@ POINTS_SAMPLE_CODE = """
 TOPOLOGY_CODE = "@density = @position.x * 2.0 + @position.z\n"
 FOLLOW_CODE = """
 @nb = grid_voxel(0, "density", @voxel + vec3(1, 0, 0))
+@nb2 = grid_voxel(0, "density", @voxel * 1.0 + vec3(1, 0, 0))  # not the fast path
 @vs: vec3 = @voxel_size
 if @position.x > 1.0:
     deactivate_voxel(@voxel)
@@ -1939,6 +1940,10 @@ if @voxel.y == 1 and @voxel.x == -4:
     activate_voxel(@voxel - vec3(0, 1, 0))
 if @voxel.x == -4 and @voxel.y == 3 and @voxel.z == 6:
     activate_voxel(@voxel + vec3(-3, 0, -2), 1)
+"""
+POINTS_ACTIVATE_CODE = """
+@i: vec3 = voxel_at(0, "density", @position)
+activate_voxel(@i, 1)
 """
 VDB_CODE = "@density = @density * 2.0 + grid_voxel(0, 'density', @voxel + vec3(0, 0, 1))\n"
 VDB_MATRIX = [[0.25, 0, 0, 0], [0, 0.25, 0, 0], [0, 0, 0.25, 0], [0.5, 0, 1.0, 1]]
@@ -2089,6 +2094,33 @@ class TestVoxels(unittest.TestCase):
             self.assertEqual(v, d.get((x + 1, y, z), 0.0))
         self.assertEqual(self.table(out.grids["c"]), d)
 
+    def test_neighbor_reads_match_the_host_call(self):
+        # The same reads by the fast path (@voxel or an alias, plus or minus one step) and by the
+        # host call (an offset the compiler can't see): equal, also where no neighbor exists.
+        geo = Geometry(grids={"density": self.density(), "vel": _voxel_grid(
+            self.BOX, np.arange(len(self.BOX) * 3, dtype=np.float32).reshape(-1, 3))})
+        fast = ("v = @voxel\n@a = grid_voxel(0, 'density', v - vec3(0, 0, 1))\n"
+                "@b: vec3 = grid_voxel(0, 'vel', @voxel + vec3(0, 1, 0))\n"
+                "@c = grid_voxel(0, 'density', @voxel)\n")  # fmt: skip
+        slow = fast.replace("v - vec3", "v * 1.0 - vec3").replace("@voxel + vec3", "@voxel * 1.0 + vec3")
+        slow = slow.replace("'density', @voxel)", "'density', @voxel * 1.0)")
+        sig = toast.compile_source(fast, "voxels").signature
+        self.assertEqual(sorted(a["name"] for a in sig["attrs"] if a["grid"]),
+                         ["__grid_density", "__grid_vel", "__n2", "__n5"])
+        self.assertFalse(any(a["grid"] for a in toast.compile_source(slow, "voxels").signature["attrs"]))
+        a = run(toast.build(fast, "voxels"), [geo], threads=3, grain=5)
+        b = run(toast.build(slow, "voxels"), [geo])
+        for name in ("a", "b", "c"):
+            np.testing.assert_array_equal(a.grids[name].values, b.grids[name].values)
+        self.assertIn(0.0, a.grids["a"].values.tolist())  # Some voxels had no neighbor below.
+
+    def test_voxel_at_and_activation_from_points(self):
+        g = _voxel_grid([(0, 0, 0)], np.array([1.0], np.float32), size=0.5)
+        geo = Geometry({"position": np.array([[2.1, 0.2, -0.3]], np.float32)}, grids={"d": g})
+        out = run(toast.build("@i: vec3 = voxel_at(0, 'd', @position)\nactivate_voxel(@i)\n"), [geo])
+        self.assertEqual(out.points["i"].tolist(), [[4.0, 0.0, -1.0]])
+        self.assertEqual(self.table(out.grids["d"]), {(0, 0, 0): 1.0, (4, 0, -1): 0.0})
+
     def test_activate_and_deactivate_voxels(self):
         coords = [(0, 0, 0), (1, 0, 0), (2, 0, 0)]
         geo = Geometry(grids={"density": _voxel_grid(coords, np.array([1.0, 2.0, 3.0], np.float32)),
@@ -2114,9 +2146,7 @@ class TestVoxels(unittest.TestCase):
             with self.assertRaises(toast.ToastError) as cm:
                 toast.compile_source(code, "voxels")
             self.assertIn(msg, str(cm.exception))
-        with self.assertRaises(toast.ToastError) as cm:
-            toast.compile_source("activate_voxel(vec3(0))\n", "points")
-        self.assertIn("activate_voxel() doesn't work with Run Over Points", str(cm.exception))
+
 
 
 @unittest.skipUnless(_blender_has_toast_node(), "Blender with GeometryNodeToast not found")
@@ -2132,7 +2162,10 @@ class TestBlenderVolumes(unittest.TestCase):
         {"name": "topology", "input": "topology", "run_over": "VOXELS", "code": TOPOLOGY_CODE,
          "grids": [["topo", "BOOLEAN"], ["density", "FLOAT"]]},
         {"name": "follow", "run_over": "VOXELS", "code": FOLLOW_CODE,
-         "grids": [["density", "FLOAT"], ["vel", "VECTOR"], ["nb", "FLOAT"], ["vs", "VECTOR"]]},
+         "grids": [["density", "FLOAT"], ["vel", "VECTOR"], ["nb", "FLOAT"], ["nb2", "FLOAT"],
+                   ["vs", "VECTOR"]]},
+        {"name": "points_activate", "run_over": "POINTS", "points": 40, "code": POINTS_ACTIVATE_CODE,
+         "grids": [["density", "FLOAT"], ["vel", "VECTOR"]]},
     ]  # fmt: skip
     VDB_CASE = {"name": "vdb", "run_over": "VOXELS", "code": VDB_CODE,
                 "grids": [["density", "FLOAT"], ["vel", "VECTOR"]]}  # fmt: skip
@@ -2231,6 +2264,19 @@ class TestBlenderVolumes(unittest.TestCase):
         self.assertIn((-8, 2, 3), voxels)  # From the activated cube around (-7, 3, 4).
         self.assertNotIn((7, 0, 6), voxels)  # Deactivated.
         self.assertEqual(set(map(tuple, after["vel"].coords.tolist())), voxels)
+        np.testing.assert_array_equal(after["nb"].values, after["nb2"].values)
+
+    def test_points_activate_voxels(self):
+        case = self.CASES[4]
+        r = self.r[case["name"]]
+        self.assertEqual((r["out"]["error"], r["out"]["warnings"]), ("", []))
+        before, after = self.grids(case, "in"), self.grids(case, "out")
+        positions = self.f32(r["points"]["attrs"]["position"]).reshape(-1, 3)
+        out = run(toast.build(case["code"]), [Geometry({"position": positions.copy()}, grids=before)])
+        np.testing.assert_array_equal(self.f32(r["points"]["attrs"]["i"]), out.points["i"].reshape(-1))
+        for name in after:
+            self.assert_same_grid(after[name], out.grids[name])
+        self.assertGreater(len(after["density"].coords), len(before["density"].coords))
 
     def test_volume_from_a_vdb_file(self):
         if "vdb" not in self.r:

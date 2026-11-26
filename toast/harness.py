@@ -416,7 +416,7 @@ class _Host:
             src = (grid_inputs or inputs)
             geo = src[g["input"]] if g["input"] < len(src) else None
             grid = None if geo is None else geo.grids.get(g["name"])
-            if grid is not None and grid.is_vector != (g["type"] == "vec3"):
+            if grid is not None and g["type"] != "any" and grid.is_vector != (g["type"] == "vec3"):
                 grid = None
             self.grid_slots.append(_GridSampler(grid) if grid is not None else None)
         # Bytes per element of each bound attribute, for cmd_set_attr.
@@ -706,6 +706,10 @@ class _Host:
             g = sampler.gradient(p)
         elif mode == 2:
             g = sampler.voxel(p)
+        elif mode == 3:
+            g = sampler.index_of(p)
+            if g is None:
+                return 0
         else:
             g = sampler.sample(p)
         for k in range(len(g)):
@@ -777,11 +781,22 @@ class _GridSampler:
         idx = self.lookup.get((i, j, k))
         return self.background if idx is None else self.values[idx]
 
-    def sample(self, p):
+    def to_index(self, p):
         m = self.inv
         x = m[0, 0] * p[0] + m[1, 0] * p[1] + m[2, 0] * p[2] + m[3, 0]
         y = m[0, 1] * p[0] + m[1, 1] * p[1] + m[2, 1] * p[2] + m[3, 1]
         z = m[0, 2] * p[0] + m[1, 2] * p[1] + m[2, 2] * p[2] + m[3, 2]
+        return x, y, z
+
+    def index_of(self, p):
+        """The nearest voxel's index (rounded), as floats; None off the grid's range."""
+        x = self.to_index(p)
+        if not all(abs(v) < 1e9 for v in x):
+            return None
+        return np.array([np.floor(v + np.float32(0.5)) for v in x], dtype=np.float32)
+
+    def sample(self, p):
+        x, y, z = self.to_index(p)
         if not (abs(x) < 1e9 and abs(y) < 1e9 and abs(z) < 1e9):
             return self.background.copy()
         x0, y0, z0 = np.floor(x), np.floor(y), np.floor(z)
@@ -888,6 +903,30 @@ def _run_voxels(lk, inputs, params, threads, grain, selection, frame, time):
             if idx is not None:
                 arr[k] = vals[idx]
         temp.points[name] = arr
+    # grid_voxel() fast path: copies of grids on the voxels ("__grid_<name>", read at each voxel's
+    # index in the grid's own index space, as grid_voxel() would) and face neighbor tables
+    # ("__n0".."__n5": +x, -x, +y, -y, +z, -z, the neighbor's voxel number or -1).
+    number = None
+    steps = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]
+    for a in sig["attrs"]:
+        name = a["name"]
+        if name.startswith("__grid_"):
+            g = out.grids.get(name[len("__grid_"):])
+            vector = a["type"] == "vec3"
+            arr = np.zeros((n, 3) if vector else (n,), np.float32)
+            if g is not None and g.is_vector == vector:
+                sampler = _GridSampler(g)
+                for k, c in enumerate(coords):
+                    v = sampler.value(int(c[0]), int(c[1]), int(c[2]))
+                    arr[k] = v if vector else v[0]
+            temp.points[name] = arr
+        elif len(name) == 4 and name.startswith("__n") and name[3].isdigit():
+            if number is None:
+                number = {tuple(int(x) for x in c): k for k, c in enumerate(coords)}
+            d = steps[int(name[3])]
+            temp.points[name] = np.array(
+                [number.get((int(c[0]) + d[0], int(c[1]) + d[1], int(c[2]) + d[2]), -1) for c in coords],
+                np.int32)
     cmds = {"activate": [], "deactivate": set()}
     result = _run(lk, [temp] + list(inputs[1:]), params, threads, grain, selection, frame, time,
                   "points", grid_inputs=inputs, voxel_cmds=cmds)  # fmt: skip
@@ -1218,8 +1257,15 @@ def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=N
         raise HarnessError("input 0 is required")
     if lk.signature["run_over"] == "voxels":
         return _run_voxels(lk, inputs, params, threads, grain, selection, frame, time)
-    return _run(lk, inputs, params, threads, grain, selection, frame, time,
-                lk.signature["run_over"])  # fmt: skip
+    cmds = {"activate": [], "deactivate": set()}
+    out = _run(lk, inputs, params, threads, grain, selection, frame, time,
+               lk.signature["run_over"], voxel_cmds=cmds)  # fmt: skip
+    # activate_voxel()/deactivate_voxel() outside Run Over Voxels: on the grids with the
+    # transform of the volume's first grid.
+    if out.grids:
+        ref = np.asarray(next(iter(out.grids.values())).transform, np.float32)
+        _apply_voxel_cmds(out, cmds, lambda g: np.array_equal(np.asarray(g.transform, np.float32), ref))
+    return out
 
 
 def _run(lk, inputs, params, threads, grain, selection, frame, time, run_over, grid_inputs=None,

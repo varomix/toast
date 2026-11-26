@@ -31,7 +31,7 @@ typedef __SIZE_TYPE__ size_t;
 #  define offsetof(type, member) __builtin_offsetof(type, member)
 #endif
 
-#define TOAST_ABI_VERSION 9
+#define TOAST_ABI_VERSION 10
 
 #if defined(_WIN32)
 #  define TOAST_EXPORT extern "C" __declspec(dllexport)
@@ -123,10 +123,13 @@ typedef struct ToastAttr {
  *   background). mode 0 writes the value (1 float, 3 for a vec3 grid), mode 1
  *   the gradient of a float grid by central differences one voxel apart along each world axis
  *   (3 floats), mode 2 the value of the voxel at index pos3 rounded (floor(x + 0.5)), no
- *   interpolation. Returns 0 and writes zeros when the grid doesn't exist or has another type.
- * - voxel_cmd (Run Over Voxels): op 1 activates the voxels within `radius` (a cube, clamped to
- *   0..16) of index ijk, op 0 deactivates voxel ijk, in every grid of the volume with the run's
- *   transform, after the run and after the written grids are stored. Deactivations apply first
+ *   interpolation, mode 3 the index of the voxel nearest to the world position pos3 (each index
+ *   coordinate rounded; the slot's type is "any"). Returns 0 and writes zeros when the grid
+ *   doesn't exist or has another type.
+ * - voxel_cmd: op 1 activates the voxels within `radius` (a cube, clamped to 0..16) of index
+ *   ijk, op 0 deactivates voxel ijk, in every grid of input 0's volume with the run's transform
+ *   (Run Over Voxels; in other modes the transform of the volume's first grid), after the run
+ *   (and after the written grids are stored). Deactivations apply first
  *   and only to voxels nothing activates; deactivated voxels get the grid's background. Sets, so
  *   the order of calls doesn't matter.
  * Commands are merged sorted by (src, emission order), so results don't depend on threads. */
@@ -1328,6 +1331,13 @@ inline float3 grid_voxel3(const ToastCtx *c, int32_t grid, float3 index)
 {
   float out[3] = {0.0f, 0.0f, 0.0f};
   c->host->grid_sample(c->host->self, grid, 2, &index.x, out);
+  return float3(out[0], out[1], out[2]);
+}
+
+inline float3 voxel_at(const ToastCtx *c, int32_t grid, float3 pos)
+{
+  float out[3] = {0.0f, 0.0f, 0.0f};
+  c->host->grid_sample(c->host->self, grid, 3, &pos.x, out);
   return float3(out[0], out[1], out[2]);
 }
 

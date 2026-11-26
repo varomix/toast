@@ -91,9 +91,11 @@ from any volume. Grids on another voxel size or place than the first one are lef
 warning. `@voxel` is the voxel's index (a vec3 of whole numbers) and `@voxel_size` its size along
 each axis. Read a neighbor with `grid_voxel(0, "pressure", @voxel + vec3(1, 0, 0))`, or a grid
 anywhere (where smoke came from) with `sample_grid()`; both read the grids as they were before
-the run. `activate_voxel()` and `deactivate_voxel()` change which voxels exist, so a simulation's
-grid can follow its smoke. Commands (`add_point()`, `set_point_attr()`...) and `output()` don't
-work with Voxels.
+the run. Reading input 0 at `@voxel`, or one step from it along one axis (`@voxel + vec3(0, 0, 1)`,
+also through a variable only ever set to `@voxel`), reads arrays instead of asking the node: the
+fast way to read neighbors. `activate_voxel()` and `deactivate_voxel()` change which voxels
+exist, so a simulation's grid can follow its smoke. Commands (`add_point()`, `set_point_attr()`...)
+and `output()` don't work with Voxels.
 
 Every element runs independently and in parallel. Writing `@name` changes the current element
 only; to change other elements, use `set_point_attr()` and the topology functions below, which
@@ -340,6 +342,7 @@ These match Blender's nodes exactly (bit for bit). Put the scale in the position
 | `sample_nearest_surface(input, "name", position)` | A point attribute interpolated at the closest surface point. |
 | `sample_grid(input, "name", position)` | A volume grid's value at a position, trilinear: a float, or a vec3 for a vector grid (`velocity`, a declared `@name: vec3`, or annotate: `v: vec3 = sample_grid(0, "flow", p)`). 0 where the grid is missing. With any Run Over. |
 | `grid_voxel(input, "name", index)` | A grid's value at a voxel index (rounded), no interpolation: the fast way to read neighbors, `grid_voxel(0, "density", @voxel + vec3(0, 0, 1))`. |
+| `voxel_at(input, "name", position)` | The index of a grid's voxel nearest to a position (a vec3 of whole numbers): where a point is, for `activate_voxel()`. |
 | `grid_gradient(input, "name", position)` | The gradient of a float grid (vec3), by central differences one voxel apart: points up the slope of a density or out of an SDF. |
 
 Loops over related elements take a constant maximum count:
@@ -368,8 +371,8 @@ attributes the code is writing.
 | `extend_curve(c, position)` | Adds a point at the tip of curve `c` and returns it (for `set_point_attr()`). The new point copies the tip's other attributes, like its radius. |
 | `remove_curve(c)` | Removes a curve and its points. |
 | `remove_instance(i)` | Removes an instance (Run Over Instances). |
-| `activate_voxel(index, radius=0)` | After the run, the voxels within `radius` of a voxel index (a cube) exist in every grid of the volume, holding the background if they're new (Run Over Voxels). |
-| `deactivate_voxel(index)` | After the run, the voxel is gone from every grid (it reads as the background), unless something activated it in the same run (Run Over Voxels). |
+| `activate_voxel(index, radius=0)` | After the run, the voxels within `radius` of a voxel index (a cube) exist in every grid of the geometry's volume, holding the background if they're new. Any Run Over: outside Voxels, the index is in the volume's first grid's voxels (see `voxel_at()`). |
+| `deactivate_voxel(index)` | After the run, the voxel is gone from every grid (it reads as the background), unless something activated it in the same run. |
 | `set_point_attr(index, "name", value)`, `set_face_attr(...)` | Writes another element's attribute. `set_point_attr()` also writes points added in the same run: pass what `add_point()` returned, or the point's number (see the grid example below). |
 
 These are applied after the run in element order: new elements are numbered by the element that
@@ -564,6 +567,15 @@ if @density > param("keep", 0.02):
     activate_voxel(@voxel, 3)
 else:
     deactivate_voxel(@voxel)
+```
+
+### Points that make room in a volume (Run Over: Points)
+
+Particles with a volume in the same geometry (join them): each switches on the voxels around it.
+A Voxels node after this can fill them, e.g. with a density from `nearby_points(1, ...)`.
+
+```toast
+activate_voxel(voxel_at(0, "density", @position), 2)
 ```
 
 ### Points that follow a volume (Run Over: Points)

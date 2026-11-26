@@ -63,7 +63,7 @@ included, measured with `run_examples.py` below. Default settings first, then sc
 | Metaballs\* | 8 balls, 56^3 cubes, one core | 3.5 | 60^3 cubes, lower threshold (bigger blobs) | 4.3 |
 | Trails\* | 1200 curves x 48 points | 1.0 | 20000 curves x 120 points (2.4 million) | 12 |
 | Fountain\* | 250 per frame, ~18000 alive | 1.1 | 4000 per frame, ~286000 alive | 3.1 |
-| Smoke\* | voxels of 1/32 following the smoke, 28 passes per frame | 160 (230 at frame 200) | voxels of 1/64 (8 times as many) | 2400 (up to 10000) |
+| Smoke\* | voxels of 1/32 following the smoke, 28 passes per frame | 124 (170 at frame 200) | voxels of 1/64 (8 times as many) | 1440 (up to 3500) |
 
 \* Measured on an Apple M3 Max (14 cores, built-in compiler) instead.
 
@@ -96,8 +96,9 @@ edge in place.
 - **The smoke first filled a fixed box**, with its density faded near the walls and top so the
   box didn't show, and its code took the voxel size as a parameter. Now `@voxel_size`,
   `grid_voxel()` and `activate_voxel()`/`deactivate_voxel()` let the grid follow the smoke.
-- **Reading a neighbor voxel is a call into the node** (about 15 ns): six neighbors per voxel
-  per pass are most of the pressure solve's time.
+- **Reading a neighbor voxel was a call into the node** (about 15 ns): six neighbors per voxel
+  per pass were most of the pressure solve's time. Reads one step from `@voxel` now read arrays
+  (a pass of `pressure.py` on 262144 voxels: 2.2 ms before, 1.4 ms now).
 - Blender renders curves only from Curves objects, not from mesh objects: the hair is a Curves
   object that reads the head's mesh.
 

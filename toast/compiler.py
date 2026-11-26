@@ -120,7 +120,8 @@ BUILTINS = set(UNARY_MATH) | {
     "set_face_attr", "ray_cast", "closest_point", "sample_nearest_surface", "voronoi",
     "curl_noise", "len", "curve_attr", "instance_attr", "curve_count", "curve_points",
     "remove_curve", "add_curve", "extend_curve", "random_surface_point", "sample_grid",
-    "grid_gradient", "grid_voxel", "activate_voxel", "deactivate_voxel", "remove_instance", "quat", "mat4", "quat_axis_angle", "quat_euler",
+    "grid_gradient", "grid_voxel", "activate_voxel", "deactivate_voxel",
+    "voxel_at", "remove_instance", "quat", "mat4", "quat_axis_angle", "quat_euler",
     "quat_between", "rotate", "slerp", "inverse", "to_euler", "transpose", "transform_point",
     "transform_direction", "mat4_translation", "mat4_rotation", "mat4_scale", "mat4_compose",
     "output",
@@ -167,10 +168,13 @@ class Binding:
     write: bool = False
     # An output() socket: written per element, stored as an anonymous attribute by the node.
     output: bool = False
+    # Run Over Voxels: a grid read by grid_voxel() at the voxel or a face neighbor, as it was
+    # before the run (a copy), or a voxel's neighbor table ("__n0".."__n5").
+    grid: bool = False
 
     @property
     def var(self):
-        prefix = "o" if self.output else ("s" if self.snapshot else "a")
+        prefix = "o" if self.output else ("g" if self.grid else ("s" if self.snapshot else "a"))
         return f"{prefix}{self.input}{DOMAIN_SUFFIX[self.domain]}_{self.name}"
 
     @property
@@ -229,6 +233,8 @@ class Compiler:
     # Attribute types from `@name: type` annotations.
     declared: dict = field(default_factory=dict)
     assigned_names: set = field(default_factory=set)
+    # Local names whose every assignment (outside defs) is `name = @voxel`.
+    voxel_aliases: set = field(default_factory=set)
     cur_line: int = None
     # Library sources by module name ("toast_lib.x"), resolved before compiling.
     libs: dict = field(default_factory=dict)
@@ -294,6 +300,18 @@ class Compiler:
 
     def _prepass(self, tree):
         """Find attributes written on input 0 and every assigned local name."""
+        voxel_only = {}
+        for node in self._walk_outside_defs(tree):
+            if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.For)):
+                ts = node.targets if isinstance(node, ast.Assign) else [node.target]
+                plain = (isinstance(node, ast.Assign) and len(ts) == 1
+                         and isinstance(node.value, ast.Attribute) and self._is_attr(node.value)
+                         and node.value.attr == "voxel")  # fmt: skip
+                for t in ts:
+                    for n in ast.walk(t):
+                        if isinstance(n, ast.Name):
+                            voxel_only[n.id] = voxel_only.get(n.id, True) and plain and n is t
+        self.voxel_aliases = {n for n, ok in voxel_only.items() if ok}
         for node in self._walk_outside_defs(tree):
             targets = []
             if isinstance(node, ast.Assign):
@@ -1518,14 +1536,90 @@ class Compiler:
             return E(f"toast::sample_grid3(c, {slot}, {pos})", VEC3)
         return E(f"toast::sample_grid(c, {slot}, {pos})", FLOAT)
 
+    def _voxel_step(self, node):
+        """With Run Over Voxels, the face neighbor `node` names, as 0 (the voxel itself) or 1..6
+        (+x, -x, +y, -y, +z, -z), when it is `@voxel`, or `@voxel` plus or minus a constant vec3
+        with a single 1 in it; else None."""
+        if self.run_over != "voxels" or self.func is not None:
+            return None
+
+        def is_voxel(n):
+            if isinstance(n, ast.Name):
+                return n.id in self.voxel_aliases
+            return self._is_attr(n) and n.attr == "voxel"
+
+        if is_voxel(node):
+            return 0
+        if not (isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub))
+                and is_voxel(node.left)):  # fmt: skip
+            return None
+        def number(n):
+            if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.USub):
+                v = number(n.operand)
+                return None if v is None else -v
+            if isinstance(n, ast.Constant) and type(n.value) in (int, float):
+                return float(n.value)
+            return None
+
+        r = node.right
+        parts = (r.args if isinstance(r, ast.Call) and isinstance(r.func, ast.Name)
+                 and r.func.id == "vec3" and not r.keywords
+                 else r.elts if isinstance(r, ast.Tuple) else [])  # fmt: skip
+        c = [number(x) for x in parts]
+        if len(c) != 3 or None in c:
+            return None
+        if isinstance(node.op, ast.Sub):
+            c = [-x for x in c]
+        nonzero = [k for k in range(3) if c[k] != 0]
+        if not nonzero:
+            return 0
+        if len(nonzero) != 1 or abs(c[nonzero[0]]) != 1:
+            return None
+        a = nonzero[0]
+        return 1 + 2 * a + (0 if c[a] > 0 else 1)
+
     def call_grid_voxel(self, node, expect):
         """A grid's value at a voxel index (rounded), without interpolation: with Run Over
-        Voxels, grid_voxel(0, "name", @voxel + vec3(1, 0, 0)) is the next voxel along x."""
+        Voxels, grid_voxel(0, "name", @voxel + vec3(1, 0, 0)) is the next voxel along x.
+
+        Run Over Voxels reading input 0 at the voxel or a face neighbor reads arrays instead of
+        calling the host: a copy of the grid on the voxels (as it was before the run) and the
+        neighbor's voxel number (-1 when there is no such voxel: then the host call)."""
         slot, t, idx = self._grid_slot("grid_voxel", node, expect)
-        return E(f"toast::grid_voxel{'3' if t == VEC3 else ''}(c, {slot}, {idx})", t)
+        fn = f"toast::grid_voxel{'3' if t == VEC3 else ''}"
+        name = node.args[1].value
+        step = self._voxel_step(node.args[2]) if node.args[0].value == 0 else None
+        if step is None:
+            return E(f"{fn}(c, {slot}, {idx})", t)
+        values = self._grid_binding(f"__grid_{name}", t)
+        if step == 0:
+            return E(f"{values.var}[i]", t)
+        nb = self._grid_binding(f"__n{step - 1}", INT)
+        return E(f"({nb.var}[i] >= 0 ? {values.var}[{nb.var}[i]] : {fn}(c, {slot}, {idx}))", t)
+
+    def _grid_binding(self, name, t):
+        key = (0, name, "grid", "point")
+        b = self.bindings.get(key)
+        if b is None:
+            # Not a snapshot: nothing writes these, so the node binds them without a copy.
+            b = Binding(len(self.bindings), name, t, 0, False, "point", grid=True)
+            self.bindings[key] = b
+        b.read = True
+        return b
+
+    def call_voxel_at(self, node, expect):
+        """The index of the voxel of a grid nearest to a position (a vec3 of whole numbers), for
+        activate_voxel() from points; (0, 0, 0) when the grid doesn't exist."""
+        args = self._args(node, "voxel_at", 3)
+        inp = self._input_arg(args[0], "voxel_at")
+        name = self._const_str(args[1], "voxel_at(): the grid name")
+        slot = self.grids.setdefault((inp, name, "any"), len(self.grids))
+        self.host_uses.add("grid_sample")
+        self.inputs_used.add(inp)
+        pos = self.coerce(self.expr(args[2], VEC3), VEC3, args[2], "voxel_at() position")
+        return E(f"toast::voxel_at(c, {slot}, {pos})", VEC3)
 
     def _voxel_cmd(self, fname, node, n_max):
-        self._check_mode(fname, ("voxels",), node)
         args = self._args(node, fname, 1, n_max)
         idx = self.coerce(self.expr(args[0], VEC3), VEC3, args[0], f"{fname}() index")
         self.host_uses.add("voxel_cmd")
@@ -1533,7 +1627,8 @@ class Compiler:
 
     def call_activate_voxel(self, node, expect):
         """activate_voxel(index, radius=0): after the run, the voxels within `radius` (a cube)
-        of the index become active in every grid of the volume."""
+        of the index become active in every grid of the volume (of the geometry the code runs
+        on, with the transform of its first grid outside Run Over Voxels)."""
         args, idx = self._voxel_cmd("activate_voxel", node, 2)
         r = self.coerce(self.expr(args[1]), INT, args[1], "activate_voxel() radius") if len(args) == 2 else "0"
         return E(f"toast::activate_voxel(c, {idx}, {r})", NONE)
@@ -2302,6 +2397,7 @@ class Compiler:
                     "create": b.write,
                     "snapshot": b.snapshot,
                     "output": b.output,
+                    "grid": b.grid,
                 }
             )
         params = [
