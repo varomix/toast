@@ -493,7 +493,7 @@ def fluid():
     info.inputs["Object"].default_value = monkey
     info.transform_space = "RELATIVE"
     sin, sout = t.sim_zone(250, 1500)
-    rin, rout = t.repeat_zone(450, 1300, 3)
+    rin, rout = t.repeat_zone(450, 1300, 6)
     rin.label = "Substeps"
     predict = t.toast("fluid/predict", (650, 0))
     density = t.toast("fluid/density", (870, 0))
@@ -522,7 +522,7 @@ def fluid():
         "Fluid: 11664 particles, position-based (double density relaxation). Press Play.",
         "",
         "seed.py     (Points)  a block of particles",
-        "In the Simulation Zone, 3 substeps (Repeat Zone) of three chained Toast nodes:",
+        "In the Simulation Zone, 6 substeps (Repeat Zone) of three chained Toast nodes:",
         "predict.py  (Points)  gravity, move ahead",
         "density.py  (Points)  crowding and pressure from nearby_points()",
         "relax.py    (Points)  push apart, collide with the Obstacle (Input 1) and the tank",
