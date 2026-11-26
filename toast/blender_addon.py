@@ -230,14 +230,17 @@ def _prefs():
 
 
 def _follow_active_nodes():
-    """Show the active Toast node's code in the Text Editor of the same screen, when the active
-    node changes (Follow Active Node preference)."""
+    """Show the selected active Toast node's code in a Text Editor of the same screen
+    (Follow Active Node preference): when another node gets selected, or when it is selected
+    again after nothing was, or when a Text Editor is empty. A single Toast node can't change
+    the active node, so watching only that would never show its code."""
     prefs = _prefs()
     if prefs is None or not prefs.follow_active_node:
         return
     wm = bpy.context.window_manager
     for window in wm.windows if wm else ():
         screen = window.screen
+        key = screen.as_pointer()
         node = None
         for area in screen.areas:
             if area.type == "NODE_EDITOR":
@@ -246,19 +249,22 @@ def _follow_active_nodes():
                 if active is not None and active.bl_idname == NODE_IDNAME and active.select:
                     node = active
                     break
-        if node is None:
+        if node is None or node.text is None:
+            # Nothing to show: selecting it again (or once it has code) shows its code.
+            _followed.pop(key, None)
             continue
-        key = screen.as_pointer()
-        if _followed.get(key) == node.as_pointer():
-            continue
+        editors = [area for area in screen.areas if area.type == "TEXT_EDITOR"]
+        changed = _followed.get(key) != node.as_pointer()
         _followed[key] = node.as_pointer()
-        if node.text is None:
+        if any(area.spaces.active.text == node.text for area in editors):
             continue
-        for area in screen.areas:
-            if area.type == "TEXT_EDITOR" and area.spaces.active.text != node.text:
-                area.spaces.active.text = node.text
-                area.tag_redraw()
-                break
+        # An empty Text Editor always gets the code; one showing other text only on a change.
+        target = next((area for area in editors if area.spaces.active.text is None), None)
+        if target is None and changed and editors:
+            target = editors[0]
+        if target is not None:
+            target.spaces.active.text = node.text
+            target.tag_redraw()
 
 
 def auto_compile():

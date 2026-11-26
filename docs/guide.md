@@ -36,8 +36,9 @@ the [example files](https://github.com/varomix/toast/tree/main/examples).
   with **Ctrl+Enter** / **Cmd+Enter** or a **Compile** button, and the panels say when the code
   has changed but isn't compiled. Opening a file still compiles what its nodes need.
 - **Follow Active Node** (on by default, in the Toast panel and the add-on preferences): selecting
-  a Toast node shows its code in the Text Editor of the same window. Turn it off to keep the
-  Text Editor on whatever you are editing.
+  a Toast node shows its code in the Text Editor of the same window, and an empty Text Editor
+  always shows the selected node's code. Turn it off to keep the Text Editor on whatever you are
+  editing.
 - **Templates**: starter code for common jobs (noise, smoothing, scattering onto a surface,
   curves, instances...). In the node's Toast panel, a template is used by the node and sets its
   Run Over; in the Text Editor (Templates > Toast) it only creates the text.
