@@ -172,6 +172,14 @@ Euclidean, detail 0, randomness `r`; distance, color and position outputs). Scal
   bound), `v`/`w` are the barycentric weights of its second and third corner (folded when
   v + w > 1); position `a * (1 - v - w) + b * v + c * w` in float. Kernels draw u, v, w with
   `random(id, seed)`, `seed + 1000003`, `seed + 2000006`.
+- ABI 8: adds `grid_sample(grid, mode, pos, out)`: the signature's `grids` (input, name, type),
+  by slot, as they were before the run. World to index with the grid matrix inverted in double
+  (from the float matrix), then trilinear over voxel values (x, then y, then z, `a + (b - a) * t`,
+  just `a` when t is 0); mode 1 is the gradient of a float grid, central differences one voxel
+  (the length of the matrix column) along each world axis. Run Over Voxels runs on a point cloud
+  of the voxels active in any grid the code uses (all grids if none exist), tiles split, ordered
+  by leaf origin then offset; written attributes go back into grids. `_run_voxels` and
+  `_GridSampler` in the harness are the reference.
 
 ## Measurements (2026-11-24, 32 threads, g++ 14, fork 5.3)
 

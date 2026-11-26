@@ -34,7 +34,8 @@ from .version import VERSION
 NODE_IDNAME = "GeometryNodeToast"
 # The node's Run Over items and the compiler's names.
 RUN_OVER = {"POINTS": "points", "FACES": "faces", "EDGES": "edges", "CORNERS": "corners",
-            "CURVES": "curves", "INSTANCES": "instances", "GEOMETRY": "geometry"}  # fmt: skip
+            "CURVES": "curves", "INSTANCES": "instances", "VOXELS": "voxels",
+            "GEOMETRY": "geometry"}  # fmt: skip
 POLL_SECONDS = 0.2
 # Compile once the code has been unchanged this long, so typing doesn't compile every keystroke.
 DEBOUNCE_SECONDS = 0.35

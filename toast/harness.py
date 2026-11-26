@@ -18,8 +18,12 @@ Curves geometry has ``curves`` (the points of each curve, in order) instead of p
 ``curve_attrs``. Instances have ``instance_attrs``, with ``transform`` float32 (n, 4, 4)
 (column-major, like Blender's instance_transform); ``@position`` reads and writes its translation.
 
-Kernels run over points, faces (prims), curves, instances or the whole geometry once. Edges and
-corners exist only in Blender.
+Volumes are ``grids``: name -> Grid (active voxels, their values, an index-to-world transform).
+Run Over Voxels runs on them as the points of a point cloud, one per active voxel (see
+``_run_voxels``), and sample_grid() reads them.
+
+Kernels run over points, faces (prims), curves, instances, voxels or the whole geometry once.
+Edges and corners exist only in Blender.
 
 Merge rules (the contract the fork must follow too):
 - Commands are sorted by (source element index, emission order). Chunks have a fixed size, so the
@@ -67,6 +71,34 @@ class HarnessError(Exception):
     pass
 
 
+def _identity():
+    return np.eye(4, dtype=np.float32)
+
+
+@dataclass
+class Grid:
+    """A volume grid like an OpenVDB grid in Blender: values at active voxels.
+
+    ``coords`` int32 (n, 3) voxel index coordinates; ``values`` (n,) float32/int32/bool, or float32
+    (n, 3) for a vector grid; ``transform`` float32 (4, 4) index to world, column-major like
+    Blender's matrices (translation in ``transform[3, :3]``); a voxel's center is the transform of
+    its index. Inactive voxels hold ``background``.
+    """
+
+    coords: np.ndarray
+    values: np.ndarray
+    transform: np.ndarray = field(default_factory=_identity)
+    background: object = 0.0
+
+    def copy(self):
+        return Grid(np.array(self.coords, np.int32, copy=True), np.array(self.values, copy=True),
+                    np.array(self.transform, np.float32, copy=True), self.background)  # fmt: skip
+
+    @property
+    def is_vector(self):
+        return np.asarray(self.values).ndim == 2
+
+
 @dataclass
 class Geometry:
     points: dict = field(default_factory=dict)
@@ -76,6 +108,7 @@ class Geometry:
     curves: list = None
     curve_attrs: dict = field(default_factory=dict)
     instance_attrs: dict = field(default_factory=dict)
+    grids: dict = field(default_factory=dict)
 
     @property
     def ncurves(self):
@@ -105,7 +138,8 @@ class Geometry:
                         {k: np.array(v, copy=True) for k, v in self.prim_attrs.items()},
                         None if self.curves is None else [list(c) for c in self.curves],
                         {k: np.array(v, copy=True) for k, v in self.curve_attrs.items()},
-                        {k: np.array(v, copy=True) for k, v in self.instance_attrs.items()})
+                        {k: np.array(v, copy=True) for k, v in self.instance_attrs.items()},
+                        {k: g.copy() for k, g in self.grids.items()})
 
     def domain(self, name):
         """(attribute dict, element count) of a domain."""
@@ -215,6 +249,10 @@ RAY_CAST_FN = ctypes.CFUNCTYPE(
     ctypes.c_int32, ctypes.c_void_p, ctypes.c_int32, ctypes.POINTER(ctypes.c_float),
     ctypes.POINTER(ctypes.c_float), ctypes.c_float, ctypes.POINTER(ToastHit),
 )  # fmt: skip
+GRID_SAMPLE_FN = ctypes.CFUNCTYPE(
+    ctypes.c_int32, ctypes.c_void_p, ctypes.c_int32, ctypes.c_int32, ctypes.POINTER(ctypes.c_float),
+    ctypes.POINTER(ctypes.c_float),
+)
 CLOSEST_FN = ctypes.CFUNCTYPE(
     ctypes.c_int32, ctypes.c_void_p, ctypes.c_int32, ctypes.POINTER(ctypes.c_float),
     ctypes.c_float, ctypes.POINTER(ToastHit),
@@ -291,6 +329,7 @@ class ToastHost(ctypes.Structure):
         ("cmd_add_curve", ADD_PRIM_FN),
         ("cmd_extend_curve", EXTEND_CURVE_FN),
         ("surface_point", SURFACE_POINT_FN),
+        ("grid_sample", GRID_SAMPLE_FN),
     ]
 
 
@@ -363,8 +402,17 @@ def pack_params(signature, values=None):
 class _Host:
     """Host services and command buffers for one kernel run."""
 
-    def __init__(self, inputs, attr_sizes=()):
+    def __init__(self, inputs, attr_sizes=(), grids=(), grid_inputs=None):
         self.inputs = inputs
+        # sample_grid() slots: [(Grid or None, wanted type)], from the inputs as they were.
+        self.grid_slots = []
+        for g in grids:
+            src = (grid_inputs or inputs)
+            geo = src[g["input"]] if g["input"] < len(src) else None
+            grid = None if geo is None else geo.grids.get(g["name"])
+            if grid is not None and grid.is_vector != (g["type"] == "vec3"):
+                grid = None
+            self.grid_slots.append(_GridSampler(grid) if grid is not None else None)
         # Bytes per element of each bound attribute, for cmd_set_attr.
         self.attr_sizes = list(attr_sizes)
         self._topology = {}
@@ -399,11 +447,12 @@ class _Host:
             ADD_PRIM_FN(self._guard(self._add_curve, None)),
             EXTEND_CURVE_FN(self._guard(self._extend_curve, 0)),
             SURFACE_POINT_FN(self._guard(self._surface_point, 0)),
+            GRID_SAMPLE_FN(self._guard(self._grid_sample, 0)),
         )  # fmt: skip
         self._keep_fns = (self.struct.ray_cast, self.struct.closest_point, self.struct.ncurves,
                           self.struct.curve_points, self.struct.cmd_remove_curve,
                           self.struct.cmd_add_curve, self.struct.cmd_extend_curve,
-                          self.struct.surface_point)  # fmt: skip
+                          self.struct.surface_point, self.struct.grid_sample)  # fmt: skip
 
     def _guard(self, fn, default):
         def wrapped(*args):
@@ -636,6 +685,23 @@ class _Host:
         pos = a * b0 + b * v + c * w
         return self._fill_hit(out, tris[k], faces[k], pos, (b0, v, w), 0.0, A[k], B[k], C[k])
 
+    def _grid_sample(self, _self, slot, mode, pos3, out):
+        sampler = self.grid_slots[slot] if 0 <= slot < len(self.grid_slots) else None
+        for k in range(3):
+            out[k] = 0.0
+        if sampler is None:
+            return 0
+        p = [np.float32(pos3[0]), np.float32(pos3[1]), np.float32(pos3[2])]
+        if mode == 1:
+            if sampler.ncomp != 1:
+                return 0
+            g = sampler.gradient(p)
+        else:
+            g = sampler.sample(p)
+        for k in range(len(g)):
+            out[k] = float(g[k])
+        return 1
+
     def _set_attr(self, _self, cmd, src, attr, elem, value):
         size = self.attr_sizes[attr]
         data = ctypes.string_at(value, size)
@@ -672,6 +738,146 @@ class _Host:
 
     def _remove_point(self, _self, cmd, src, pt):
         self._chunk_list(cmd).append(("remove_point", src, pt, None))
+
+
+class _GridSampler:
+    """sample_grid() on one grid, with the float32 arithmetic of the fork's node."""
+
+    def __init__(self, grid):
+        self.ncomp = 3 if grid.is_vector else 1
+        self.lookup = {tuple(int(x) for x in c): k for k, c in enumerate(np.asarray(grid.coords))}
+        self.values = np.asarray(grid.values).astype(np.float32).reshape(-1, self.ncomp)
+        bg = np.asarray(grid.background, dtype=np.float32).reshape(-1)
+        self.background = np.broadcast_to(bg, (self.ncomp,)).astype(np.float32)
+        t = np.asarray(grid.transform, dtype=np.float32)
+        # Column-major: inv[col][row]; inverted in double, like the node.
+        self.inv = np.linalg.inv(t.astype(np.float64).T).T.astype(np.float32)
+        # Voxel size along each world axis: the length of the matrix's column (index axis) a.
+        self.step = [np.sqrt(t[a, 0] * t[a, 0] + t[a, 1] * t[a, 1] + t[a, 2] * t[a, 2])
+                     for a in range(3)]  # fmt: skip
+
+    def value(self, i, j, k):
+        idx = self.lookup.get((i, j, k))
+        return self.background if idx is None else self.values[idx]
+
+    def sample(self, p):
+        m = self.inv
+        x = m[0, 0] * p[0] + m[1, 0] * p[1] + m[2, 0] * p[2] + m[3, 0]
+        y = m[0, 1] * p[0] + m[1, 1] * p[1] + m[2, 1] * p[2] + m[3, 1]
+        z = m[0, 2] * p[0] + m[1, 2] * p[1] + m[2, 2] * p[2] + m[3, 2]
+        if not (abs(x) < 1e9 and abs(y) < 1e9 and abs(z) < 1e9):
+            return self.background.copy()
+        x0, y0, z0 = np.floor(x), np.floor(y), np.floor(z)
+        fx, fy, fz = x - x0, y - y0, z - z0
+        i, j, k = int(x0), int(y0), int(z0)
+        v = self.value
+
+        # x first, then y, then z; a lerp with t == 0 is its first value (b isn't read).
+        def along_x(b, c):
+            a = v(i, b, c)
+            return a if fx == 0 else a + (v(i + 1, b, c) - a) * fx
+
+        def along_y(c):
+            a = along_x(j, c)
+            return a if fy == 0 else a + (along_x(j + 1, c) - a) * fy
+
+        c0 = along_y(k)
+        return (c0 if fz == 0 else c0 + (along_y(k + 1) - c0) * fz).astype(np.float32)
+
+    def gradient(self, p):
+        g = []
+        for a in range(3):
+            h = self.step[a]
+            hi, lo = list(p), list(p)
+            hi[a] = p[a] + h
+            lo[a] = p[a] - h
+            g.append(((self.sample(hi) - self.sample(lo)) / (h + h))[0])
+        return np.array(g, dtype=np.float32)
+
+
+def _voxel_order(coords):
+    """Indices of ``coords`` in the node's order: by 8^3 leaf (x, y, z), then x, y, z inside it,
+    the order of OpenVDB's leaves sorted by origin and of their voxels by offset."""
+    c = np.asarray(coords, dtype=np.int64).reshape(-1, 3)
+    keys = (c[:, 2] & 7, c[:, 1] & 7, c[:, 0] & 7, c[:, 2] >> 3, c[:, 1] >> 3, c[:, 0] >> 3)
+    return np.lexsort(keys)
+
+
+GRID_ATTR_TYPES = {"float": np.float32, "int": np.int32, "bool": np.bool_, "vec3": np.float32}
+
+
+def _run_voxels(lk, inputs, params, threads, grain, selection, frame, time):
+    """Run Over Voxels: the code runs once per voxel that is active in any grid it uses (all the
+    volume's grids when it uses none that exist), in ``_voxel_order``. Each voxel is a point at its
+    center with the grids' values there as attributes; written attributes go back into grids
+    (new grids get these voxels, existing ones gain any they lacked). Grids whose transform differs
+    from the first one's are left out, as in the node."""
+    sig = lk.signature
+    out = inputs[0].copy()
+    used = []
+    for a in sig["attrs"]:
+        if a["input"] == 0 and not a.get("output") and a["name"] != "position":
+            if a["name"] not in used:
+                used.append(a["name"])
+    topo = [out.grids[n] for n in used if n in out.grids] or list(out.grids.values())
+    if not topo:
+        return out
+    ref = np.asarray(topo[0].transform, np.float32)
+    same = lambda g: np.array_equal(np.asarray(g.transform, np.float32), ref)  # noqa: E731
+    coords = set()
+    for g in topo:
+        if same(g):
+            coords.update(tuple(int(x) for x in c) for c in np.asarray(g.coords).reshape(-1, 3))
+    coords = np.array(sorted(coords), dtype=np.int32).reshape(-1, 3)
+    coords = coords[_voxel_order(coords)]
+    n = len(coords)
+    if n == 0:
+        return out
+    f = coords.astype(np.float32)
+    t = ref
+    pos = np.empty((n, 3), np.float32)
+    for r in range(3):
+        pos[:, r] = t[0, r] * f[:, 0] + t[1, r] * f[:, 1] + t[2, r] * f[:, 2] + t[3, r]
+    temp = Geometry(points={"position": pos})
+    types = {a["name"]: a["type"] for a in sig["attrs"] if a["input"] == 0}
+    for name in used:
+        g = out.grids.get(name)
+        if g is None or not same(g) or name not in types:
+            continue
+        want = types[name]
+        if (want == "vec3") != g.is_vector or want not in GRID_ATTR_TYPES:
+            continue
+        lookup = {tuple(int(x) for x in c): k for k, c in enumerate(np.asarray(g.coords))}
+        vals = np.asarray(g.values)
+        shape = (n, 3) if g.is_vector else (n,)
+        arr = np.empty(shape, dtype=GRID_ATTR_TYPES[want])
+        arr[...] = np.asarray(g.background, dtype=arr.dtype)
+        for k, c in enumerate(coords):
+            idx = lookup.get((int(c[0]), int(c[1]), int(c[2])))
+            if idx is not None:
+                arr[k] = vals[idx]
+        temp.points[name] = arr
+    result = _run(lk, [temp] + list(inputs[1:]), params, threads, grain, selection, frame, time,
+                  "points", grid_inputs=inputs)  # fmt: skip
+    for a in sig["attrs"]:
+        name = a["name"]
+        if a["input"] != 0 or "w" not in a["access"] or a.get("output") or name == "position":
+            continue
+        vals = result.points[name]
+        old = out.grids.get(name)
+        if (old is not None and same(old) and old.is_vector == (vals.ndim == 2)
+                and np.asarray(old.values).dtype == vals.dtype):  # fmt: skip
+            merged = {tuple(int(x) for x in c): v for c, v in zip(np.asarray(old.coords), old.values)}
+            for c, v in zip(coords, vals):
+                merged[(int(c[0]), int(c[1]), int(c[2]))] = v
+            keys = sorted(merged)
+            out.grids[name] = Grid(np.array(keys, np.int32).reshape(-1, 3),
+                                   np.array([merged[k] for k in keys], dtype=vals.dtype),
+                                   ref.copy(), old.background)  # fmt: skip
+        else:
+            zero = np.zeros(3, np.float32) if vals.ndim == 2 else vals.dtype.type(0)
+            out.grids[name] = Grid(coords.copy(), np.array(vals, copy=True), ref.copy(), zero)
+    return out
 
 
 def _new_point_set(payload, arrays, domains):
@@ -941,12 +1147,18 @@ def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=N
     point indices to run over (the mask); unselected points are left unchanged.
     """
     lk = kernel if isinstance(kernel, LoadedKernel) else LoadedKernel(kernel)
-    sig = lk.signature
     inputs = list(inputs)
     if not inputs or inputs[0] is None:
         raise HarnessError("input 0 is required")
+    if lk.signature["run_over"] == "voxels":
+        return _run_voxels(lk, inputs, params, threads, grain, selection, frame, time)
+    return _run(lk, inputs, params, threads, grain, selection, frame, time,
+                lk.signature["run_over"])  # fmt: skip
+
+
+def _run(lk, inputs, params, threads, grain, selection, frame, time, run_over, grid_inputs=None):
+    sig = lk.signature
     out = inputs[0].copy()
-    run_over = sig["run_over"]
     if sig["uses"].get("curves") and out.curves is None:
         if out.npoints or out.nprims:
             raise HarnessError("the code makes curves, but input 0 is a mesh or point cloud (the "
@@ -1019,7 +1231,8 @@ def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=N
     params_buf = pack_params(sig, params)
     host = _Host(inputs, [a.dtype.itemsize * (a.size // max(len(a), 1)) if len(a) else
                           np.dtype(NP_TYPES[s["type"]][0]).itemsize * int(np.prod(NP_TYPES[s["type"]][1]))
-                          for a, s in zip(keep_alive, sig["attrs"])])  # fmt: skip
+                          for a, s in zip(keep_alive, sig["attrs"])],
+                 sig.get("grids", ()), grid_inputs)  # fmt: skip
 
     if selection is not None:
         indices = np.ascontiguousarray(np.asarray(selection, dtype=np.int64))

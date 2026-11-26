@@ -19,20 +19,19 @@ its tip (kernel ABI 6). The trails example uses both. Still to do:
 - Choosing the type of new curves (Bezier, NURBS) and writing curve attributes of new curves
   (`set_curve_attr()`); today new curves are poly with default curve attributes.
 
-### Volumes
+### Volumes (done in 0.17)
 
-**Today:** volumes pass through untouched; there is no way to read or write a grid.
+Run Over Voxels runs once per active voxel, with grids as `@` attributes (float, int, bool,
+vec3); `sample_grid()` and `grid_gradient()` read grids from any mode (kernel ABI 8). Boxes of
+voxels come from Cube Grid Topology. The smoke example uses it all. Still to do:
 
-**Plan:**
-- Reading: `sample_grid(input, "density", position)` (trilinear) and `grid_gradient(...)` on
-  Input 0 or 1, so points can follow smoke, stick to an SDF or be colored by a density.
-- Writing: Run Over Voxels, the code runs once per active voxel of a float or vector grid
-  (`@density`, `@velocity`, `@position` = voxel center). Blender's volume grids are OpenVDB; the
-  node would visit leaf nodes in parallel with the same fixed chunking, so results stay the same
-  at any thread count.
-- Making grids: a way to fill a dense box (`Run Over Voxels` on a grid made by a Blender node,
-  e.g. Volume Cube or Points to SDF Grid) before Toast writes into it.
-- Example to prove it: smoke advected by Toast (semi-Lagrangian), or a level set that grows.
+- The voxel's size and index in code (`@voxel_size`, `@voxel`), so code doesn't need them as
+  parameters.
+- Faster neighbor reads: a voxel reading its six neighbors makes six host calls; a
+  `voxel_attr(0, "name", di, dj, dk)` reading by index offset would skip the transform.
+- Changing which voxels are active from code (activate around smoke, deactivate empty space),
+  so a simulation's grid follows its smoke instead of filling a box.
+- Not tried yet on volumes loaded from VDB files (only on grids made by Blender's nodes).
 
 ### Grease Pencil (done in 0.15)
 
@@ -67,7 +66,7 @@ the next. Plus inserting a point into a mesh edge in place, so growth doesn't re
 
 ## Example scenes to make
 
-Ideas for examples that show what the current ten don't, roughly easiest first. Each note says
+Ideas for examples that show what the current ones don't, roughly easiest first. Each note says
 what it would show off and what it needs that Toast doesn't have yet, if anything.
 
 | Scene | Shows | Needs |
@@ -82,4 +81,5 @@ what it would show off and what it needs that Toast doesn't have yet, if anythin
 | **Diffusion-limited aggregation** (lightning, frost) | `nearest_point` on a growing cloud, Run Over Geometry, `add_curve` strokes | Nothing new |
 | **Ivy crawling over a statue** | `extend_curve` growth, `closest_point` + `ray_cast` to stay on the surface, leaves as instances (`@transform`, `mat4`) | Nothing new |
 | **Strange attractors** drawn as long strands | Heavy math per step, `extend_curve` histories | Nothing new |
-| **Smoke** advected through a grid | Volumes | Volumes |
+| **Fire**: the smoke example with temperature, burning fuel and emission | A temperature grid, Blackbody in the material | Nothing new |
+| **Level set** that grows or erodes a shape | Run Over Voxels on an SDF from Mesh to SDF Grid, `grid_gradient` | Nothing new |

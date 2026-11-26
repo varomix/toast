@@ -43,11 +43,11 @@ from .types import (
 )
 from .version import ABI_VERSION, VERSION
 
-RUN_OVER = ("points", "faces", "edges", "corners", "curves", "instances", "geometry")
+RUN_OVER = ("points", "faces", "edges", "corners", "curves", "instances", "voxels", "geometry")
 # Domain of `@` attributes for each run-over mode ("geometry" runs once and has none).
 RUN_DOMAIN = {
     "points": "point", "faces": "face", "edges": "edge", "corners": "corner", "curves": "curve",
-    "instances": "instance", "geometry": None,
+    "instances": "instance", "voxels": "point", "geometry": None,
 }  # fmt: skip
 DOMAIN_SUFFIX = {"point": "", "face": "f", "edge": "e", "corner": "c", "curve": "k", "instance": "n"}
 # Domains input 0 has in each mode. With Run Over Points the code runs on meshes, point clouds and
@@ -59,6 +59,8 @@ INPUT0_DOMAINS = {
     "corners": {"point", "face", "edge", "corner"},
     "curves": {"point", "curve"},
     "instances": {"instance"},
+    # Voxels run as the points of a point cloud, one per active voxel (see the node and harness).
+    "voxels": {"point"},
     "geometry": {"point", "face", "edge", "corner", "curve"},
 }
 DOMAIN_WORD = {"point": "points", "face": "faces", "edge": "edges", "corner": "face corners",
@@ -113,7 +115,8 @@ BUILTINS = set(UNARY_MATH) | {
     "point_faces", "point_neighbors", "corner_point", "corner_face", "set_point_attr",
     "set_face_attr", "ray_cast", "closest_point", "sample_nearest_surface", "voronoi",
     "curl_noise", "len", "curve_attr", "instance_attr", "curve_count", "curve_points",
-    "remove_curve", "add_curve", "extend_curve", "random_surface_point", "remove_instance", "quat", "mat4", "quat_axis_angle", "quat_euler",
+    "remove_curve", "add_curve", "extend_curve", "random_surface_point", "sample_grid",
+    "grid_gradient", "remove_instance", "quat", "mat4", "quat_axis_angle", "quat_euler",
     "quat_between", "rotate", "slerp", "inverse", "to_euler", "transpose", "transform_point",
     "transform_direction", "mat4_translation", "mat4_rotation", "mat4_scale", "mat4_compose",
     "output",
@@ -210,6 +213,8 @@ class Compiler:
     surface_inputs: set = field(default_factory=set)
     uses_cmd: bool = False
     builds_curves: bool = False  # add_curve()/extend_curve(): Run Over Geometry runs on curves.
+    # sample_grid()/grid_gradient(): (input, grid name, type) -> slot, in first-use order.
+    grids: dict = field(default_factory=dict)
     uses_return: bool = False
     uses_time: bool = False
     loop_depth: int = 0
@@ -386,6 +391,9 @@ class Compiler:
                 node,
             )
         name = raw
+        if write and self.run_over == "voxels" and name == "position":
+            self.err("@position is the voxel's center and can't be written; to move values, "
+                     "read them from elsewhere with sample_grid()", node)  # fmt: skip
         t = self._attr_type(name, node, expect)
         self._check_attr_consistent(0, name, t, node, domain)
         b = self.bind(0, name, t, snapshot=False, read=read, write=write, domain=domain)
@@ -1218,6 +1226,14 @@ class Compiler:
         self.err(f"{fname}(): with Run Over {self.run_over.capitalize()}, input 0 has no "
                  f"{DOMAIN_WORD[domain]}", node)  # fmt: skip
 
+    def _use_cmd(self, node):
+        """The code queues commands (add, remove, set_*_attr): not with Run Over Voxels."""
+        if self.run_over == "voxels":
+            fname = getattr(getattr(node, "func", None), "id", "this")
+            self.err(f"{fname}() doesn't work with Run Over Voxels: the code changes voxels only "
+                     "through @ attributes (each one a grid)", node)  # fmt: skip
+        self.uses_cmd = True
+
     def _check_mode(self, fname, modes, node, hint=""):
         if self.run_over not in modes:
             self.err(f"{fname}() doesn't work with Run Over {self.run_over.capitalize()}{hint}", node)
@@ -1261,6 +1277,9 @@ class Compiler:
             self.err(f"output() can't be used inside def {self.func['name']}(); return the value "
                      "and call output() outside", node)  # fmt: skip
         domain = RUN_DOMAIN[self.run_over]
+        if self.run_over == "voxels":
+            self.err("output() doesn't work with Run Over Voxels; store the value in a grid with "
+                     "an @ attribute", node)  # fmt: skip
         if domain is None:
             self.err("output(): Run Over Geometry runs once and has no elements to give values "
                      "to; store an attribute with set_point_attr() instead", node)  # fmt: skip
@@ -1339,7 +1358,7 @@ class Compiler:
         e = self.expr(a)
         if e.type != INT:
             self.err(f"remove_curve() needs a curve number, got {e.type}", a)
-        self.uses_cmd = True
+        self._use_cmd(node)
         return E(f"toast::remove_curve(c, i, {e.code})", NONE)
 
     def call_remove_instance(self, node, expect):
@@ -1348,7 +1367,7 @@ class Compiler:
         e = self.expr(a)
         if e.type != INT:
             self.err(f"remove_instance() needs an instance number, got {e.type}", a)
-        self.uses_cmd = True
+        self._use_cmd(node)
         return E(f"toast::remove_point(c, i, {e.code})", NONE)
 
     def call_face_count(self, node, expect):
@@ -1364,7 +1383,7 @@ class Compiler:
         e = self.expr(a)
         if e.type != INT:
             self.err(f"remove_face() needs a face number, got {e.type}", a)
-        self.uses_cmd = True
+        self._use_cmd(node)
         return E(f"toast::remove_prim(c, i, {e.code})", NONE)
 
     def call_point_count(self, node, expect):
@@ -1418,7 +1437,7 @@ class Compiler:
         t = self._attr_type(name, node, value.type)
         self._check_attr_consistent(0, name, t, node, domain)
         b = self.bind(0, name, t, snapshot=False, write=True, domain=domain)
-        self.uses_cmd = True
+        self._use_cmd(node)
         vc = self.coerce(value, t, a_value, f"{fname}() value")
         return E(f"toast::set_attr<{t.cpp}>(c, i, {b.index}, {jc}, {vc})", NONE)
 
@@ -1458,6 +1477,40 @@ class Compiler:
                 if len(args) == 3 else "0")  # fmt: skip
         return E(f"toast::random_surface_point(c, {inp}, {id_}, {seed})", HIT)
 
+    def _grid_slot(self, fname, node, expect):
+        """(slot, type, position code) of the grid in `fname(input, "name", position)`."""
+        args = self._args(node, fname, 3)
+        inp = self._input_arg(args[0], fname)
+        name = self._const_str(args[1], f"{fname}(): the grid name")
+        if not name:
+            self.err(f"{fname}(): the grid name can't be empty", node)
+        if fname == "grid_gradient":
+            t = FLOAT
+        elif self.declared.get(name) in (FLOAT, VEC3):
+            t = self.declared[name]
+        elif KNOWN_ATTRS.get(name) == VEC3 or expect == VEC3:
+            t = VEC3
+        else:
+            t = FLOAT
+        slot = self.grids.setdefault((inp, name, t.name), len(self.grids))
+        self.host_uses.add("grid_sample")
+        self.inputs_used.add(inp)
+        pos = self.coerce(self.expr(args[2], VEC3), VEC3, args[2], f"{fname}() position")
+        return slot, t, pos
+
+    def call_sample_grid(self, node, expect):
+        """The value of a volume grid at a position, trilinear: a float, or a vec3 for vector
+        grids (velocity, or with an annotation)."""
+        slot, t, pos = self._grid_slot("sample_grid", node, expect)
+        if t == VEC3:
+            return E(f"toast::sample_grid3(c, {slot}, {pos})", VEC3)
+        return E(f"toast::sample_grid(c, {slot}, {pos})", FLOAT)
+
+    def call_grid_gradient(self, node, expect):
+        """The gradient of a float grid at a position (central differences, one voxel apart)."""
+        slot, _t, pos = self._grid_slot("grid_gradient", node, expect)
+        return E(f"toast::grid_gradient(c, {slot}, {pos})", VEC3)
+
     def call_closest_point(self, node, expect):
         args = self._args(node, "closest_point", 2, 3)
         inp = self._surface_input("closest_point", args[0])
@@ -1495,7 +1548,7 @@ class Compiler:
         self._check_mode("add_point", ("points", "faces", "edges", "corners", "curves", "geometry"),
                          node)  # fmt: skip
         pos = self.coerce(self.expr(a, VEC3), VEC3, a, "add_point() position")
-        self.uses_cmd = True
+        self._use_cmd(node)
         return E(f"toast::add_point(c, i, {pos})", POINTREF)
 
     def _point_refs(self, fname, nodes):
@@ -1515,14 +1568,14 @@ class Compiler:
                 self.err("add_face() needs 3 or more points; use add_edge(a, b) for 2", node)
             self.err("add_face() takes a tuple of 3 or more points, like add_face((a, b, c))", node)
         pts = self._point_refs("add_face", a.elts)
-        self.uses_cmd = True
+        self._use_cmd(node)
         return E(f"toast::add_prim(c, i, {', '.join(pts)})", NONE)
 
     def call_add_curve(self, node, expect):
         """add_curve((a, b, ...)), or add_curve(points, count) with a list of point numbers."""
         args = self._args(node, "add_curve", 1, 2)
         self._check_mode("add_curve", ("points", "curves", "geometry"), node)
-        self.uses_cmd = True
+        self._use_cmd(node)
         self.builds_curves = True
         if len(args) == 2:
             lst = self.expr(args[0])
@@ -1546,7 +1599,7 @@ class Compiler:
         if curve.type != INT:
             self.err(f"extend_curve() needs a curve number, got {curve.type}", a_curve)
         pos = self.coerce(self.expr(a_pos, VEC3), VEC3, a_pos, "extend_curve() position")
-        self.uses_cmd = True
+        self._use_cmd(node)
         self.builds_curves = True
         return E(f"toast::extend_curve(c, i, {curve.code}, {pos})", POINTREF)
 
@@ -1554,7 +1607,7 @@ class Compiler:
         args = self._args(node, "add_edge", 2)
         self._check_domain("add_edge", 0, "edge", node)
         pts = self._point_refs("add_edge", args)
-        self.uses_cmd = True
+        self._use_cmd(node)
         return E(f"toast::add_prim(c, i, {', '.join(pts)})", NONE)
 
     def call_remove_point(self, node, expect):
@@ -1564,7 +1617,7 @@ class Compiler:
         e = self.expr(a)
         if e.type not in (INT, POINTREF):
             self.err(f"remove_point() needs a point number, got {e.type}", a)
-        self.uses_cmd = True
+        self._use_cmd(node)
         return E(f"toast::remove_point(c, i, {e.code})", NONE)
 
     # ------------------------------------------------------------------ statements
@@ -2231,6 +2284,8 @@ class Compiler:
             "attrs": attrs,
             "params": params,
             "params_size": params_size,
+            "grids": [{"input": inp, "name": name, "type": t}
+                      for (inp, name, t), _slot in sorted(self.grids.items(), key=lambda kv: kv[1])],
             "outputs": [{"name": n, "type": t.name, "socket": OUTPUT_SOCKETS[t.name]}
                         for n, (t, _line) in self.outputs.items()],  # fmt: skip
             "uses": {

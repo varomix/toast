@@ -61,7 +61,7 @@ class TestGuide(unittest.TestCase):
         for path in kernels:
             code = path.read_text()
             first = code.split("\n", 1)[0]
-            run_over = next((k for k in ("points", "faces", "curves", "instances", "geometry")
+            run_over = next((k for k in ("points", "faces", "curves", "instances", "voxels", "geometry")
                              if f"Run Over: {k.title()}" in first), "points")  # fmt: skip
             with self.subTest(kernel=f"{path.parent.name}/{path.name}"):
                 toast.compile_source(code, run_over=run_over,

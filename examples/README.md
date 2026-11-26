@@ -20,6 +20,7 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
 | [11_trails](11_trails.blend) | Particles in a flow, each leaving a trail | Curves made by Toast: `add_point` + `add_curve` (Run Over Geometry), `extend_curve` and `remove_point` per curve each frame (Run Over Curves) in a Simulation Zone |
 | [12_sketch](12_sketch.blend) | A Grease Pencil drawing that grows hairs and boils like hand-drawn animation | Toast on Grease Pencil: Run Over Geometry draws new strokes into each layer (`add_curve`), Run Over Points jitters every stroke point and its `@radius` |
 | [13_fountain](13_fountain.blend) | Sparks born on a turning monkey, bouncing on the floor | Particles: emission with `random_surface_point` on Input 1 (Run Over Geometry), gravity, bounce and death by age (Run Over Points) in a Simulation Zone |
+| [14_smoke](14_smoke.blend) | A plume of smoke rising and curling | Volumes: Run Over Voxels on a box from Cube Grid Topology, grids as `@density`/`@velocity`, `sample_grid` for advection and neighbor reads, a pressure solve in a Repeat Zone, `grid_gradient`, vorticity confinement; rendered in Cycles |
 
 <p>
   <img src="images/01_flocking.png" width="32%">
@@ -37,7 +38,10 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
   <img src="images/12_sketch.png" width="32%">
   <img src="images/13_fountain.png" width="32%">
 </p>
-<img src="images/06_mandelbulb.png" width="40%">
+<p>
+  <img src="images/06_mandelbulb.png" width="40%">
+  <img src="images/14_smoke.png" width="40%">
+</p>
 
 ## How far it goes
 
@@ -59,6 +63,7 @@ included, measured with `run_examples.py` below. Default settings first, then sc
 | Metaballs\* | 8 balls, 56^3 cubes, one core | 3.5 | 60^3 cubes, lower threshold (bigger blobs) | 4.3 |
 | Trails\* | 1200 curves x 48 points | 1.0 | 20000 curves x 120 points (2.4 million) | 12 |
 | Fountain\* | 250 per frame, ~18000 alive | 1.1 | 4000 per frame, ~286000 alive | 3.1 |
+| Smoke\* | 56 x 56 x 112 voxels (351000) x 28 passes | 134 | 112 x 112 x 112 (1.4 million) x 28 passes | 476 |
 
 \* Measured on an Apple M3 Max (14 cores, built-in compiler) instead.
 
@@ -88,6 +93,10 @@ edge in place.
   the hair keeps 32 points per strand, the tree a stack of 512 branches, and the metaballs stop at
   60^3 cubes: a layer of 61 x 61 corners fit in a list, and the triangle table fills one exactly.
 - **Run Over Geometry is sequential**, see above.
+- **The smoke's code doesn't know the voxel size.** `divergence.py`, `pressure.py`,
+  `vorticity.py` and `step.py` take it as a `voxel_size` parameter, which must match the box (1/32
+  here). Voxel sizes that are powers of two put voxel centers exactly on the grid, so neighbor
+  reads read one voxel; other sizes work, a little slower and blurrier.
 - Blender renders curves only from Curves objects, not from mesh objects: the hair is a Curves
   object that reads the head's mesh.
 

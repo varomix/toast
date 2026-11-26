@@ -1915,5 +1915,232 @@ class TestBlenderEditor(unittest.TestCase):
                                                 "guide_file": True})  # fmt: skip
 
 
+VOXEL_ADVECT_CODE = """
+v: vec3 = sample_grid(0, "vel", @position)
+@density = sample_grid(0, "density", @position - v * 0.3) + 0.5
+@grad: vec3 = grid_gradient(0, "density", @position)
+@n: int = @index
+"""
+POINTS_SAMPLE_CODE = """
+@d = sample_grid(0, "density", @position)
+@v: vec3 = sample_grid(0, "vel", @position)
+@g = grid_gradient(0, "density", @position)
+@miss = sample_grid(0, "nope", @position)
+"""
+TOPOLOGY_CODE = "@density = @position.x * 2.0 + @position.z\n"
+
+
+def _voxel_grid(coords, values, size=0.25, offset=(0.0, 0.0, 0.0), background=0.0):
+    from toast.harness import Grid
+
+    t = np.eye(4, dtype=np.float32) * np.float32(size)
+    t[3] = (*offset, 1.0)
+    return Grid(np.array(coords, np.int32).reshape(-1, 3), np.array(values), t, background)
+
+
+class TestVoxels(unittest.TestCase):
+    """Run Over Voxels and sample_grid() in the harness (the contract the node follows)."""
+
+    BOX = [(i, j, k) for i in range(-3, 10) for j in range(2) for k in range(6, 9)]
+
+    def density(self, coords=None):
+        c = np.array(coords or self.BOX, np.float32)
+        return _voxel_grid(coords or self.BOX, (c[:, 0] * 0.5 + c[:, 2] * 0.25).astype(np.float32))
+
+    def test_one_run_per_voxel_in_leaf_order(self):
+        out = run(toast.build("@n: int = @index\n", "voxels"), [Geometry(grids={"density": self.density()})])
+        n = out.grids["n"]
+        self.assertEqual(n.values.tolist(), list(range(len(self.BOX))))
+        # Leaf x -8..-1 before 0..7 before 8..15; inside a leaf x, then y, then z.
+        self.assertEqual(n.coords[0].tolist(), [-3, 0, 6])
+        self.assertEqual(n.coords[1].tolist(), [-3, 0, 7])
+        self.assertEqual(n.coords[2].tolist(), [-3, 1, 6])
+        self.assertEqual(n.coords[12].tolist(), [-3, 0, 8])
+        self.assertEqual(n.coords[18].tolist(), [0, 0, 6])
+        self.assertEqual(n.coords[-1].tolist(), [9, 1, 8])
+
+    def test_position_is_the_voxel_center(self):
+        g = _voxel_grid([(1, 2, 3)], np.zeros(1, np.float32), size=0.5, offset=(1.0, 0.0, -1.0))
+        out = run(toast.build("@p: vec3 = @position\n", "voxels"), [Geometry(grids={"a": g})])
+        self.assertEqual(out.grids["p"].values.tolist(), [[1.5, 1.0, 0.5]])
+
+    def test_voxels_of_all_used_grids(self):
+        a = _voxel_grid([(0, 0, 0), (1, 0, 0)], np.array([1.0, 2.0], np.float32))
+        b = _voxel_grid([(5, 0, 0)], np.array([7.0], np.float32))
+        geo = Geometry(grids={"a": a, "b": b, "unused": _voxel_grid([(9, 9, 9)], np.zeros(1, np.float32))})
+        out = run(toast.build("@a = @a + @b\n", "voxels"), [geo])
+        self.assertEqual(sorted(map(tuple, out.grids["a"].coords.tolist())), [(0, 0, 0), (1, 0, 0), (5, 0, 0)])
+        self.assertEqual(sorted(out.grids["a"].values.tolist()), [1.0, 2.0, 7.0])
+        # A grid the code doesn't use isn't touched, and its voxels don't run.
+        self.assertEqual(out.grids["unused"].coords.tolist(), [[9, 9, 9]])
+
+    def test_new_grids_use_every_grid_when_none_exist(self):
+        geo = Geometry(grids={"topo": _voxel_grid([(0, 0, 0), (2, 0, 0)], np.ones(2, bool))})
+        out = run(toast.build("@density = @position.x\n", "voxels"), [geo])
+        self.assertEqual(out.grids["density"].values.tolist(), [0.0, 0.5])
+        self.assertEqual(out.grids["topo"].values.tolist(), [True, True])
+
+    def test_selection_keeps_values(self):
+        out = run(toast.build("@density = 1.0\n", "voxels"), [Geometry(grids={"density": self.density()})],
+                  selection=[0, 2])  # fmt: skip
+        before = self.density()
+        old = {tuple(c): v for c, v in zip(before.coords.tolist(), before.values.tolist())}
+        new = {tuple(c): v for c, v in zip(out.grids["density"].coords.tolist(),
+                                           out.grids["density"].values.tolist())}  # fmt: skip
+        changed = {c for c in old if new[c] != old[c]}
+        self.assertEqual(changed, {(-3, 0, 6), (-3, 1, 6)})
+        self.assertEqual({new[c] for c in changed}, {1.0})
+
+    def test_sample_grid_is_trilinear(self):
+        geo = Geometry({"position": np.array([[0.3, 0.1, 1.75], [-0.6, 0.2, 1.7], [9.0, 0.0, 0.0]],
+                                             np.float32)},  # fmt: skip
+                       grids={"density": self.density()})
+        out = run(toast.build("@d = sample_grid(0, 'density', @position)\n"
+                              "@g = grid_gradient(0, 'density', @position)\n"), [geo]).points
+        # The field is linear inside the box: index = position * 4, value = 0.5 x + 0.25 z.
+        p = geo.points["position"][:2].astype(np.float64) * 4
+        np.testing.assert_allclose(out["d"][:2], p[:, 0] * 0.5 + p[:, 2] * 0.25, rtol=1e-6)
+        # One voxel either way along x and z stays inside the box at the first point.
+        np.testing.assert_allclose(out["g"][0, [0, 2]], [2.0, 1.0], atol=1e-5)
+        self.assertEqual(out["d"][2], 0.0)  # Outside: the background.
+
+    def test_vector_grids_and_missing_grids(self):
+        vel = _voxel_grid([(0, 0, 0)], np.array([[1.0, 2.0, 3.0]], np.float32))
+        geo = Geometry({"position": np.zeros((1, 3), np.float32)}, grids={"vel": vel})
+        out = run(toast.build("w: vec3 = sample_grid(0, 'vel', @position)\n"
+                              "@a = w\n"
+                              "@b = sample_grid(0, 'velocity', @position)\n"  # a vector, by name
+                              "@m = sample_grid(0, 'nope', @position)\n"), [geo]).points
+        self.assertEqual(out["a"].tolist(), [[1.0, 2.0, 3.0]])
+        self.assertEqual(out["b"].tolist(), [[0.0, 0.0, 0.0]])
+        self.assertEqual(out["m"].tolist(), [0.0])
+
+    def test_same_result_on_any_threads(self):
+        geo = Geometry(grids={"density": self.density(), "vel": _voxel_grid(
+            self.BOX, np.tile(np.array([[0.2, -0.1, 0.3]], np.float32), (len(self.BOX), 1)))})
+        k = toast.build(VOXEL_ADVECT_CODE, "voxels")
+        a = run(k, [geo])
+        b = run(k, [geo], threads=4, grain=5)
+        for name in a.grids:
+            np.testing.assert_array_equal(a.grids[name].values, b.grids[name].values)
+
+    def test_voxels_mode_errors(self):
+        for code, msg in (("add_point(@position)\n", "add_point() doesn't work with Run Over Voxels"),
+                          ("@position = vec3(0)\n", "@position is the voxel's center"),
+                          ("output('x', 1.0)\n", "output() doesn't work with Run Over Voxels"),
+                          ("face_attr(0, 'a', 0)\n", "input 0 has no faces")):  # fmt: skip
+            with self.assertRaises(toast.ToastError) as cm:
+                toast.compile_source(code, "voxels")
+            self.assertIn(msg, str(cm.exception))
+
+
+@unittest.skipUnless(_blender_has_toast_node(), "Blender with GeometryNodeToast not found")
+class TestBlenderVolumes(unittest.TestCase):
+    """Run Over Voxels and sample_grid() in the fork, bit for bit with the harness, on grids
+    made by Blender's volume nodes (see blender_volume_check.py)."""
+
+    CASES = [
+        {"name": "advect", "run_over": "VOXELS", "code": VOXEL_ADVECT_CODE,
+         "grids": [["density", "FLOAT"], ["vel", "VECTOR"], ["grad", "VECTOR"], ["n", "INT"]]},
+        {"name": "points", "run_over": "POINTS", "points": 40, "code": POINTS_SAMPLE_CODE,
+         "grids": [["density", "FLOAT"], ["vel", "VECTOR"]]},
+        {"name": "topology", "input": "topology", "run_over": "VOXELS", "code": TOPOLOGY_CODE,
+         "grids": [["topo", "BOOLEAN"], ["density", "FLOAT"]]},
+    ]  # fmt: skip
+
+    @classmethod
+    def setUpClass(cls):
+        repo = Path(__file__).resolve().parents[1]
+        script = Path(__file__).resolve().parent / "blender_volume_check.py"
+        with tempfile.TemporaryDirectory() as d:
+            cases = Path(d) / "cases.json"
+            cases.write_text(json.dumps(cls.CASES))
+            proc = subprocess.run(
+                [BLENDER, "-b", "--factory-startup", "--enable-autoexec", "--python-exit-code",
+                 "1", "--python", str(script), "--", str(repo), str(cases)],
+                capture_output=True, text=True, timeout=300,
+            )  # fmt: skip
+        line = [ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")]
+        if proc.returncode != 0 or not line:
+            raise AssertionError(proc.stdout[-3000:] + proc.stderr[-3000:])
+        cls.r = json.loads(line[0][len("RESULT "):])
+
+    @staticmethod
+    def f32(b):
+        return np.array(b, dtype=np.uint32).view(np.float32)
+
+    def grids(self, case, phase):
+        """{name: Grid} from a dump (Grid to Points of each grid of the case)."""
+        from toast.harness import Grid
+
+        d = self.r[case["name"]][phase]
+        self.assertEqual(d["error"], "")
+        a = d["attrs"]
+        if not a.get("g"):
+            return {}
+        g = np.array(a["g"])
+        self.assertFalse(any(a["tile"]), "tiles in the dump")
+        coords = np.stack([a["ix"], a["iy"], a["iz"]], axis=1).astype(np.int32)
+        out = {}
+        for k, (name, data_type) in enumerate(case["grids"]):
+            sel = g == k
+            if not sel.any():
+                continue
+            v, bg = a[f"v{k}"], a[f"bg{k}"]
+            if data_type == "VECTOR":
+                values = self.f32(v).reshape(-1, 3)[sel]
+                bg = self.f32(bg).reshape(-1, 3)[sel][0]
+            elif data_type == "FLOAT":
+                values, bg = self.f32(v)[sel], self.f32(bg)[sel][0]
+            elif data_type == "INT":
+                values, bg = np.array(v, np.int32)[sel], int(np.array(bg)[sel][0])
+            else:
+                values, bg = np.array(v, bool)[sel], bool(np.array(bg)[sel][0])
+            m = self.f32(a["m"]).reshape(-1, 4, 4)[sel][0]
+            out[name] = Grid(coords[sel], values, m, bg)
+        return out
+
+    def assert_same_grid(self, got, want):
+        def table(grid):
+            vals = np.ascontiguousarray(grid.values)
+            if vals.dtype == np.float32:
+                vals = vals.view(np.uint32)
+            vals = vals.reshape(len(grid.coords), -1)
+            return {tuple(c): tuple(v) for c, v in zip(grid.coords.tolist(), vals.tolist())}
+
+        self.assertEqual(table(got), table(want))
+        np.testing.assert_array_equal(got.transform, want.transform)
+
+    def check_voxels(self, case):
+        before, after = self.grids(case, "in"), self.grids(case, "out")
+        self.assertEqual(self.r[case["name"]]["out"]["warnings"], [])
+        out = run(toast.build(case["code"], "voxels"), [Geometry(grids=before)])
+        self.assertEqual(sorted(after), sorted(out.grids))
+        for name in after:
+            self.assert_same_grid(after[name], out.grids[name])
+        return after
+
+    def test_voxels_match_harness(self):
+        after = self.check_voxels(self.CASES[0])
+        self.assertEqual(len(after["n"].coords), 12 * 4 * 4)
+        self.assertEqual(sorted(after["n"].values.tolist()), list(range(12 * 4 * 4)))
+
+    def test_new_grids_on_a_topology(self):
+        after = self.check_voxels(self.CASES[2])
+        self.assertEqual(len(after["density"].coords), 12 * 4 * 4)
+
+    def test_sample_grid_from_points(self):
+        case = self.CASES[1]
+        r = self.r[case["name"]]["points"]
+        self.assertEqual(r["error"], "")
+        self.assertEqual(r["warnings"], ['sample_grid(): the geometry has no grid "nope", it reads as zero'])
+        positions = self.f32(r["attrs"]["position"]).reshape(-1, 3)
+        geo = Geometry({"position": positions.copy()}, grids=self.grids(case, "in"))
+        out = run(toast.build(case["code"]), [geo]).points
+        for name in ("d", "v", "g", "miss"):
+            np.testing.assert_array_equal(self.f32(r["attrs"][name]), out[name].reshape(-1), name)
+        self.assertTrue((out["d"] != 0).sum() > 10)  # Most points are inside the box.
+
+
 if __name__ == "__main__":
     unittest.main()

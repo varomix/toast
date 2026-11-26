@@ -68,6 +68,7 @@ the [example files](https://github.com/varomix/toast/tree/main/examples).
 | Face Corners | face corner | corners |
 | Curves | curve | curves (`@position` reads the average of its points) |
 | Instances | instance of the top-level geometry | instances (`@position`, `@transform`) |
+| Voxels | active voxel of the volume's grids | grids: each `@name` is a grid (`@position` reads the voxel's center) |
 | Geometry | once for the whole geometry | (none) |
 
 With Points, the code runs separately on each part that has points: the mesh, the point cloud and
@@ -79,6 +80,16 @@ Curves run on every layer, one layer at a time (input 0 is that layer's strokes)
 Geometry when the code makes curves: `add_curve()` then draws new strokes into each layer.
 Grease Pencil attributes have their Blender names: `@radius`, `@opacity`, `@vertex_color`
 (`vec4`), and your own. Input 1 doesn't read Grease Pencil yet.
+
+**Volumes:** with Voxels, every `@name` the code uses is a grid of the volume: reading `@density`
+reads the "density" grid at the voxel, writing `@velocity` writes the "velocity" grid, and a
+grid that doesn't exist yet is made. Grids hold `float`, `int`, `bool` or `vec3` (annotate a new
+vector grid, `@velocity` is one already). The code runs once per voxel that is active in any of
+the grids it uses (in all the volume's grids when none of those exist yet), and grids it writes
+gain those voxels. Make a box of voxels with Cube Grid Topology and Store Named Grid, or start
+from any volume. Grids on another voxel size or place than the first one are left out, with a
+warning. Commands (`add_point()`, `set_point_attr()`...) and `output()` don't work with Voxels.
+To read a grid somewhere else, a neighbor voxel or where smoke came from, use `sample_grid()`.
 
 Every element runs independently and in parallel. Writing `@name` changes the current element
 only; to change other elements, use `set_point_attr()` and the topology functions below, which
@@ -322,6 +333,8 @@ These match Blender's nodes exactly (bit for bit). Put the scale in the position
 | `closest_point(input, position)` | The closest point on the surface, as a hit. |
 | `random_surface_point(input, id, seed=0)` | A random point on the surface, area weighted, as a hit (position, normal, face). The same `id` and `seed` give the same point: for emitting particles. |
 | `sample_nearest_surface(input, "name", position)` | A point attribute interpolated at the closest surface point. |
+| `sample_grid(input, "name", position)` | A volume grid's value at a position, trilinear: a float, or a vec3 for a vector grid (`velocity`, a declared `@name: vec3`, or annotate: `v: vec3 = sample_grid(0, "flow", p)`). 0 where the grid is missing. With any Run Over. |
+| `grid_gradient(input, "name", position)` | The gradient of a float grid (vec3), by central differences one voxel apart: points up the slope of a density or out of an SDF. |
 
 Loops over related elements take a constant maximum count:
 
@@ -520,6 +533,28 @@ for k in range(rate):
 @id: int
 ```
 
+### Move smoke along its velocity (Run Over: Voxels)
+
+On a volume with "density" and "velocity" grids, in a Simulation Zone: each voxel takes the
+smoke from where it came from (semi-Lagrangian advection). The smoke example adds the pressure
+solve that makes it swirl.
+
+```toast voxels
+dt = param("delta_time", 0.0417)
+back = @position - @velocity * dt
+@density = sample_grid(0, "density", back)
+@velocity = sample_grid(0, "velocity", back) + vec3(0, 0, param("buoyancy", 2.0) * @density * dt)
+```
+
+### Points that follow a volume (Run Over: Points)
+
+Points with a volume on Input 1: move along its "velocity" grid, or stick to an SDF's surface.
+
+```toast
+v: vec3 = sample_grid(1, "velocity", @position)
+@position += v * param("step", 0.05)
+```
+
 ### Select with code, then use the selection in other nodes
 
 ```toast
@@ -549,7 +584,8 @@ Errors name the line, and spellings from earlier Toast versions tell you the new
 
 ## Limits
 
-- Meshes, point clouds, curves and instances. Volumes and Grease Pencil are not supported.
+- Meshes, point clouds, curves, instances, Grease Pencil and volumes (grids of float, int, bool
+  and vec3; Run Over Voxels and `sample_grid()`).
 - Run Over Instances changes the instances of the top-level geometry only, like Blender's
   instance nodes; geometry inside instances runs with the other modes.
 - Linux and macOS (the node loads compiled code with `dlopen`).

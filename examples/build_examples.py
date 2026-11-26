@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import bpy
+import mathutils
 
 HERE = Path(__file__).resolve().parent
 SRC = HERE / "src"
@@ -27,7 +28,8 @@ import toast  # noqa: E402
 from toast import blender_addon  # noqa: E402
 
 RUN_OVER = {"points": "POINTS", "faces": "FACES", "edges": "EDGES", "corners": "CORNERS",
-            "curves": "CURVES", "instances": "INSTANCES", "geometry": "GEOMETRY"}  # fmt: skip
+            "curves": "CURVES", "instances": "INSTANCES", "voxels": "VOXELS",
+            "geometry": "GEOMETRY"}  # fmt: skip
 
 
 # --- Scene helpers ---------------------------------------------------------------------------
@@ -1037,6 +1039,93 @@ def fountain():
     save("13_fountain")
 
 
+def volume_material(name, color=(0.8, 0.8, 0.82), density=6.0):
+    """Principled Volume reading the "density" grid."""
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.remove(nt.nodes["Principled BSDF"])
+    vol = nt.nodes.new("ShaderNodeVolumePrincipled")
+    vol.location = (-300, 0)
+    vol.inputs["Color"].default_value = (*color, 1)
+    vol.inputs["Density"].default_value = density
+    nt.links.new(vol.outputs[0], nt.nodes["Material Output"].inputs["Volume"])
+    return mat
+
+
+def smoke():
+    new_file(200)
+    obj = mesh_object("Smoke")
+    t = Tree(obj, "Smoke")
+    # A box of 56 x 56 x 112 voxels of 1/32: voxel centers land exactly on the grid, so a voxel
+    # reading its neighbors reads them exactly.
+    topo = t.node("GeometryNodeCubeGridTopology", (-200, 0), **{
+        "Bounds Min": (-0.875, -0.875, 0.0), "Bounds Max": (0.875, 0.875, 3.5),
+        "Resolution X": 56, "Resolution Y": 56, "Resolution Z": 112})  # fmt: skip
+    store = t.node("GeometryNodeStoreNamedGrid", (0, 0), Name="box")
+    store.data_type = "BOOLEAN"
+    t.link(topo.outputs[0], store.inputs["Grid"])
+    setup = t.toast("smoke/setup", (200, 0))
+    t.link(store.outputs[0], setup.inputs["Geometry"])
+    sin, sout = t.sim_zone(450, 1900)
+    vort = t.toast("smoke/vorticity", (650, 250))
+    step = t.toast("smoke/step", (650, 0))
+    div = t.toast("smoke/divergence", (900, 0))
+    rin, rout = t.repeat_zone(1150, 1650, 24)
+    rin.label = "Pressure iterations"
+    pressure = t.toast("smoke/pressure", (1400, 0))
+    project = t.toast("smoke/project", (1750, -250))
+    t.link(setup.outputs[0], sin.inputs["Geometry"])
+    t.link(sin.outputs["Geometry"], vort.inputs["Geometry"])
+    t.link(vort.outputs[0], step.inputs["Geometry"])
+    t.link(sin.outputs["Delta Time"], step.inputs["delta_time"])
+    t.link(step.outputs[0], div.inputs["Geometry"])
+    t.link(div.outputs[0], rin.inputs["Geometry"])
+    t.link(rin.outputs["Geometry"], pressure.inputs["Geometry"])
+    t.link(pressure.outputs[0], rout.inputs["Geometry"])
+    t.link(rout.outputs["Geometry"], project.inputs["Geometry"])
+    t.link(project.outputs[0], sout.inputs["Geometry"])
+    setmat = t.node("GeometryNodeSetMaterial", (2100, 0))
+    setmat.inputs["Material"].default_value = volume_material("Smoke", density=12.0)
+    t.link(sout.outputs["Geometry"], setmat.inputs["Geometry"])
+    t.finish(setmat.outputs[0], 2300)
+    obj.data.materials.append(setmat.inputs["Material"].default_value)
+
+    bpy.ops.mesh.primitive_plane_add(size=30)
+    bpy.context.active_object.data.materials.append(material("Floor", color=(0.05, 0.05, 0.06), roughness=0.6))
+    camera((0, -9.0, 1.5), (0, 0, 1.8), lens=40)
+    # Volumes look best path traced: Cycles for this one.
+    scene = bpy.context.scene
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 64
+    scene.cycles.use_denoising = True
+    scene.cycles.volume_step_rate = 0.5
+    light("SUN", (0, 0, 10), 3.0, rotation=(40, 0, 35), size=2, color=(1.0, 0.92, 0.8))
+    # A cool light from behind, aimed at the plume: a rim on the smoke's edges.
+    rim = light("AREA", (1.5, 3.5, 3.0), 400, size=3, color=(0.5, 0.65, 1.0))
+    rim.rotation_euler = (mathutils.Vector((0, 0, 1.8)) - rim.location).to_track_quat("-Z", "Y").to_euler()
+    note([
+        "Smoke: a plume rising through a box of voxels. Press Play.",
+        "",
+        "Cube Grid Topology makes the box (56 x 56 x 112 voxels); every Toast node here runs over",
+        "its voxels, and each @ attribute is a grid (density, velocity, pressure, divergence).",
+        "",
+        "setup.py       (Voxels)  empty grids",
+        "In the Simulation Zone:",
+        "vorticity.py   (Voxels)  how fast the smoke spins at each voxel",
+        "step.py        (Voxels)  advection: each voxel reads density and velocity where its",
+        "                         smoke comes from, with sample_grid(); a source, buoyancy,",
+        "                         swirl, and a push that keeps small eddies turning",
+        "divergence.py  (Voxels)  how much flows out of each voxel",
+        "pressure.py    (Voxels)  one Jacobi step; the Repeat Zone runs it 24 times",
+        "project.py     (Voxels)  velocity minus the pressure gradient (grid_gradient)",
+        "",
+        "Try: swirl, buoyancy, source_radius; more pressure iterations; a bigger box",
+        "(keep voxel_size in divergence.py and pressure.py equal to the box's voxel size).",
+    ])
+    save("14_smoke")
+
+
 EXAMPLES = {
     "flocking": flocking,
     "reaction_diffusion": reaction_diffusion,
@@ -1051,6 +1140,7 @@ EXAMPLES = {
     "trails": trails,
     "sketch": sketch,
     "fountain": fountain,
+    "smoke": smoke,
 }
 
 if __name__ == "__main__":

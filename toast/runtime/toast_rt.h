@@ -31,7 +31,7 @@ typedef __SIZE_TYPE__ size_t;
 #  define offsetof(type, member) __builtin_offsetof(type, member)
 #endif
 
-#define TOAST_ABI_VERSION 7
+#define TOAST_ABI_VERSION 8
 
 #if defined(_WIN32)
 #  define TOAST_EXPORT extern "C" __declspec(dllexport)
@@ -117,6 +117,12 @@ typedef struct ToastAttr {
  * - surface_point: a point on the triangles of `input`'s mesh (as it was before the run), area
  *   weighted: `u` picks the triangle (by cumulative area, in double), `v` and `w` the place in it
  *   (folded back into the triangle when v + w > 1). Fills a hit (distance 0); returns out->hit.
+ * - grid_sample: a volume grid of the signature's "grids" (by slot, as it was before the run) at a
+ *   world position, trilinear over voxel values, x then y then z, each lerp `a + (b - a) * t` or
+ *   just `a` when t is 0 (inactive voxels give the value the grid holds there, usually its
+ *   background). mode 0 writes the value (1 float, 3 for a vec3 grid), mode 1
+ *   the gradient of a float grid by central differences one voxel apart along each world axis
+ *   (3 floats). Returns 0 and writes zeros when the grid doesn't exist or has another type.
  * Commands are merged sorted by (src, emission order), so results don't depend on threads. */
 typedef struct ToastHost {
   void *self;
@@ -159,6 +165,8 @@ typedef struct ToastHost {
   /* ABI 7. */
   int32_t (*surface_point)(
       void *self, int32_t input, float u, float v, float w, ToastHit *out);
+  /* ABI 8. */
+  int32_t (*grid_sample)(void *self, int32_t grid, int32_t mode, const float *pos3, float *out);
 } ToastHost;
 
 typedef struct ToastCtx {
@@ -1284,6 +1292,28 @@ inline Hit random_surface_point(const ToastCtx *c, int32_t input, int32_t id, in
                          random(id, seed + 2000006),
                          &h);
   return to_hit(h);
+}
+
+/* sample_grid / grid_gradient: a volume grid at a position, by its slot in the signature. */
+inline float sample_grid(const ToastCtx *c, int32_t grid, float3 pos)
+{
+  float out[3] = {0.0f, 0.0f, 0.0f};
+  c->host->grid_sample(c->host->self, grid, 0, &pos.x, out);
+  return out[0];
+}
+
+inline float3 sample_grid3(const ToastCtx *c, int32_t grid, float3 pos)
+{
+  float out[3] = {0.0f, 0.0f, 0.0f};
+  c->host->grid_sample(c->host->self, grid, 0, &pos.x, out);
+  return float3(out[0], out[1], out[2]);
+}
+
+inline float3 grid_gradient(const ToastCtx *c, int32_t grid, float3 pos)
+{
+  float out[3] = {0.0f, 0.0f, 0.0f};
+  c->host->grid_sample(c->host->self, grid, 1, &pos.x, out);
+  return float3(out[0], out[1], out[2]);
 }
 
 /* rand(x): hash to [0, 1]. Floats and vectors hash their bits, ints hash their value. */
