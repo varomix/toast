@@ -1385,6 +1385,16 @@ INSTANCES_CODE = """
 if @index == 2:
     remove_instance(@index)
 """
+OUTPUTS_CODE = """
+cell = voronoi(@position * 2)
+output("distance", cell.distance)
+output("selected", @position.x > 0.2)
+if @index % 2 == 1:
+    output("n", @index * 10)
+output("spin", quat_axis_angle((0, 0, 1), @position.y))
+output("unused", 5.0)
+output("unused_too", 1.5)
+"""
 GRID_TYPES_CODE = """
 @q: quat = quat_euler(@position)
 @m: mat4 = mat4_compose(@position, @q, 2.0)
@@ -1410,6 +1420,16 @@ class TestBlenderTypes(unittest.TestCase):
         {"name": "grid_types", "input": "grid", "run_over": "POINTS", "code": GRID_TYPES_CODE},
         {"name": "remove_curve_on_mesh", "input": "grid", "run_over": "POINTS",
          "code": "remove_curve(0)\n"},
+        {"name": "outputs", "input": "grid", "run_over": "POINTS", "code": OUTPUTS_CODE,
+         "store": [["distance", "FLOAT", "POINT", "dist"], ["n", "INT", "POINT", "n"],
+                   ["spin", "QUATERNION", "POINT", "spin"], ["unused_too", "FLOAT", "POINT", "u"]]},
+        {"name": "output_selection", "input": "grid", "run_over": "POINTS", "code": OUTPUTS_CODE,
+         "delete": "selected"},
+        {"name": "output_faces", "input": "grid", "run_over": "FACES",
+         "code": "output('up', @index % 3 == 0)\n", "delete": "up", "delete_domain": "FACE"},
+        {"name": "output_with_topology", "input": "grid", "run_over": "POINTS",
+         "code": "output('d', float(@index))\nif @index % 2 == 0:\n    remove_point(@index)\n",
+         "store": [["d", "FLOAT", "POINT", "d"]]},
     ]  # fmt: skip
     CURVE_POINTS = np.array([(0, 0, 0), (1, 0, 0), (2, 0.5, 0), (0, 1, 0), (1, 1, 0.5), (2, 1, 0),
                              (3, 1.5, 0)], np.float32)  # fmt: skip
@@ -1494,6 +1514,33 @@ class TestBlenderTypes(unittest.TestCase):
         self.assertEqual(r["attrs"]["m"]["type"], "FLOAT4X4")
         for name in ("q", "m", "a", "curl", "e"):
             self.assert_bits(r["attrs"][name]["values"], out.points[name])
+
+    def test_outputs(self):
+        r = self.ok("outputs")
+        self.assertEqual(r["outputs"], [["Geometry", "GEOMETRY"], ["distance", "VALUE"],
+                                        ["selected", "BOOLEAN"], ["n", "INT"], ["spin", "ROTATION"],
+                                        ["unused", "VALUE"], ["unused_too", "VALUE"]])  # fmt: skip
+        positions = self.f32(r["P"], (-1, 3))
+        out = run(toast.build(OUTPUTS_CODE), [Geometry({"position": positions.copy()})]).points
+        self.assert_bits(r["attrs"]["dist"]["values"], out["output.distance"])
+        self.assertEqual(r["attrs"]["n"]["values"], out["output.n"].tolist())
+        self.assert_bits(r["attrs"]["spin"]["values"], out["output.spin"])
+        self.assert_bits(r["attrs"]["u"]["values"], np.full(len(positions), 1.5))
+        # Outputs are anonymous: nothing named after them stays on the geometry.
+        self.assertFalse({"distance", "selected", "unused"} & set(r["attrs"]))
+
+    def test_output_as_selection(self):
+        before = self.f32(self.ok("outputs")["P"], (-1, 3))
+        r = self.ok("output_selection")
+        np.testing.assert_array_equal(self.f32(r["P"], (-1, 3)), before[before[:, 0] <= 0.2])
+
+    def test_face_output_as_selection(self):
+        r = self.ok("output_faces")
+        self.assertEqual(len(r["faces"]), 12 - 4)
+
+    def test_output_survives_topology_changes(self):
+        r = self.ok("output_with_topology")
+        self.assert_bits(r["attrs"]["d"]["values"], np.arange(1, 20, 2))
 
     def test_remove_curve_needs_curves(self):
         r = self.r["remove_curve_on_mesh"]

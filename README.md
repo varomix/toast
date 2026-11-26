@@ -139,6 +139,10 @@ Euclidean, detail 0, randomness `r`; distance, color and position outputs). Scal
 - ABI 4: adds `ToastHit`, `ray_cast` and `closest_point` (the input's triangles before the run).
   The harness does both by brute force over a fan triangulation, so compare it with Blender on
   triangle meshes.
+- Outputs (0.11, no ABI change): `output(name, value)` binds a writable attribute with
+  `"output": true` in the signature's `attrs`, and the signature lists `outputs` (name, type,
+  socket). The node declares them as anonymous attribute outputs and binds the anonymous
+  attribute Blender gives each used socket; unused ones get a scratch buffer.
 - ABI 5: adds `ncurves`, `curve_points`, `cmd_remove_curve`, the curve and instance domain
   codes, and the `quat` (w, x, y, z) and `mat4` (column-major 4x4) attribute types. The node runs
   Points on each of the mesh, point cloud and curves; input 0 is then only that component.

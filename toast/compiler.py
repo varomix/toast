@@ -113,7 +113,11 @@ BUILTINS = set(UNARY_MATH) | {
     "remove_curve", "remove_instance", "quat", "mat4", "quat_axis_angle", "quat_euler",
     "quat_between", "rotate", "slerp", "inverse", "to_euler", "transpose", "transform_point",
     "transform_direction", "mat4_translation", "mat4_rotation", "mat4_scale", "mat4_compose",
+    "output",
 }  # fmt: skip
+# Types an output() socket can have, and the socket each becomes.
+OUTPUT_SOCKETS = {"float": "Float", "int": "Integer", "bool": "Boolean", "vec3": "Vector",
+                  "vec4": "Color", "quat": "Rotation", "mat4": "Matrix"}  # fmt: skip
 LOOP_FUNCTIONS = ("range", "nearby_points", "face_points", "point_faces", "point_neighbors",
                   "curve_points")  # fmt: skip
 
@@ -151,10 +155,12 @@ class Binding:
     domain: str = "point"
     read: bool = False
     write: bool = False
+    # An output() socket: written per element, stored as an anonymous attribute by the node.
+    output: bool = False
 
     @property
     def var(self):
-        prefix = "s" if self.snapshot else "a"
+        prefix = "o" if self.output else ("s" if self.snapshot else "a")
         return f"{prefix}{self.input}{DOMAIN_SUFFIX[self.domain]}_{self.name}"
 
     @property
@@ -193,6 +199,8 @@ class Compiler:
     bindings: dict = field(default_factory=dict)
     attr_types: dict = field(default_factory=dict)
     params: dict = field(default_factory=dict)
+    # output() sockets in order: name -> (type, line of the first call).
+    outputs: dict = field(default_factory=dict)
     host_uses: set = field(default_factory=set)
     inputs_used: set = field(default_factory=set)
     nearpoints_inputs: set = field(default_factory=set)
@@ -1212,6 +1220,40 @@ class Compiler:
             return E(f"(p.p_{name} != 0)", BOOL)
         return E(f"p.p_{name}", d.type)
 
+    def call_output(self, node, expect):
+        """output(name, value): a socket on the node with `value` for each element of the Run Over
+        domain (an anonymous attribute, like the Top output of Extrude Mesh)."""
+        a_name, a_value = self._args(node, "output", 2)
+        name = self._const_str(a_name, "output(): the output name")
+        if not IDENT_RE.match(name):
+            self.err(f"output(): '{name}' is not a valid output name (letters, digits, _)", node)
+        if self.func is not None:
+            self.err(f"output() can't be used inside def {self.func['name']}(); return the value "
+                     "and call output() outside", node)  # fmt: skip
+        domain = RUN_DOMAIN[self.run_over]
+        if domain is None:
+            self.err("output(): Run Over Geometry runs once and has no elements to give values "
+                     "to; store an attribute with set_point_attr() instead", node)  # fmt: skip
+        old = self.outputs.get(name)
+        value = self.expr(a_value, old[0] if old else None)
+        if old is None:
+            t = value.type
+            if t == VECS[2]:
+                self.err("output(): vec2 outputs are not supported, use a vec3", node)
+            if t.name not in OUTPUT_SOCKETS:
+                self.err(f"output(): a {t} can't be an output (use {', '.join(OUTPUT_SOCKETS)})",
+                         node)  # fmt: skip
+            self.outputs[name] = (t, node.lineno)
+        t = self.outputs[name][0]
+        key = (0, ("output", name), False, domain)
+        b = self.bindings.get(key)
+        if b is None:
+            b = Binding(len(self.bindings), name, t, 0, False, domain, output=True)
+            self.bindings[key] = b
+        b.write = True
+        code = self.coerce(value, t, a_value, f"output('{name}')")
+        return E(f"{b.var}[i] = {code}", NONE)
+
     def _element_read(self, fname, domain, node, expect):
         """point_attr()/face_attr(): an attribute of element j of an input, by constant name."""
         if self.func is not None:
@@ -2073,6 +2115,7 @@ class Compiler:
                     "access": access or "r",
                     "create": b.write,
                     "snapshot": b.snapshot,
+                    "output": b.output,
                 }
             )
         params = [
@@ -2093,6 +2136,8 @@ class Compiler:
             "attrs": attrs,
             "params": params,
             "params_size": params_size,
+            "outputs": [{"name": n, "type": t.name, "socket": OUTPUT_SOCKETS[t.name]}
+                        for n, (t, _line) in self.outputs.items()],  # fmt: skip
             "uses": {
                 "cmd": self.uses_cmd,
                 "time": self.uses_time,

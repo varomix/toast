@@ -504,6 +504,9 @@ class NODE_PT_toast(bpy.types.Panel):
                 return
             col = layout.column(align=True)
             for a in sig.get("attrs", []):
+                if a.get("output"):
+                    col.label(text=f"{a['type']} output: {a['name']}")
+                    continue
                 where = f" (input {a['input']})" if a["input"] else ""
                 snap = ", snapshot" if a.get("snapshot") else ""
                 col.label(text=f"{a['type']} @{a['name']}: {a['access']}{where}{snap}")

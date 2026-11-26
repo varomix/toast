@@ -182,6 +182,26 @@ if flip:
     @position.z = -@position.z
 ```
 
+### Outputs
+
+`output(name, value)` adds an output socket to the node, with `value` for each element of the
+Run Over domain: a field, like the Top and Side outputs of Extrude Mesh. Connect it to any field
+input after the node: a Boolean output is a selection, a Float can drive a Set Position offset or
+a Store Named Attribute.
+
+```toast
+cell = voronoi(@position * 4)
+output("distance", cell.distance)          # Float socket
+output("cell_color", cell.color)           # Vector socket
+output("inside", cell.distance < 0.3)      # Boolean socket: a selection
+```
+
+The socket type comes from the value: `float`, `int`, `bool`, `vec3` (Vector), `vec4` (Color),
+`quat` (Rotation) or `mat4` (Matrix). Elements that don't reach the `output()` call (inside an
+`if`) get 0 or False. Outputs are not stored on the geometry under their name, so they don't
+clutter the attribute list; use `@name = ...` for that. Run Over Geometry has no elements, so it
+can't have outputs.
+
 ### Helpers and libraries
 
 `def` helpers are compiled once for each combination of argument types they are called with:
@@ -404,6 +424,14 @@ s = map_range(random(@index, 1), 0, 1, 0.5, 1.5)
 if random(@index, param("seed", 0)) > 0.5:
     remove_curve(@index)
 ```
+
+### Select with code, then use the selection in other nodes
+
+```toast
+output("top", @normal.z > param("threshold", 0.7))
+```
+
+Connect **top** to the Selection of Extrude Mesh, Delete Geometry or Set Material.
 
 ### Mark where faces touch each point (Run Over: Faces)
 

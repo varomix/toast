@@ -802,15 +802,19 @@ def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=N
                 raise HarnessError(f"attribute '{a['name']}' needs input {inp}, which is empty")
         domain = a.get("domain", "point")
         container, size = geo.domain(domain)
-        arr = container.get(a["name"])
-        if domain == "instance" and a["name"] == "position" and "transform" in container:
+        # output() values are kept as "output.<name>" on the Run Over domain.
+        key = f"output.{a['name']}" if a.get("output") else a["name"]
+        arr = container.get(key)
+        if (domain == "instance" and a["name"] == "position" and "transform" in container
+                and not a.get("output")):  # fmt: skip
             arr = np.ascontiguousarray(container["transform"][:, 3, :3])
             if geo is out and "w" in a["access"]:
                 position_writeback = arr
             keep_alive.append(arr)
             attrs[k] = ToastAttr(arr.ctypes.data, len(arr), 0, 0)
             continue
-        if arr is None and domain in ("face", "curve") and "w" not in a["access"] and a["name"] in geo.points:
+        if (arr is None and domain in ("face", "curve") and "w" not in a["access"]
+                and a["name"] in geo.points and not a.get("output")):  # fmt: skip
             groups = geo.prims if domain == "face" else geo.curves
             arr = adapt_point_to_face(geo.points[a["name"]], groups).astype(
                 geo.points[a["name"]].dtype)
@@ -819,7 +823,7 @@ def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=N
             if not a["create"]:
                 raise HarnessError(f"attribute '{a['name']}' not found on input {inp}")
             arr = np.zeros(shape, dtype=dtype)
-            container[a["name"]] = arr
+            container[key] = arr
         if arr.dtype != dtype or arr.shape != shape:
             raise HarnessError(
                 f"attribute '{a['name']}' is {arr.dtype}{arr.shape}, kernel needs "
@@ -827,7 +831,7 @@ def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=N
             )
         if not arr.flags["C_CONTIGUOUS"]:
             arr = np.ascontiguousarray(arr)
-            container[a["name"]] = arr
+            container[key] = arr
         keep_alive.append(arr)
         attrs[k] = ToastAttr(arr.ctypes.data, len(arr), 0, 0)
 

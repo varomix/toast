@@ -94,7 +94,24 @@ def build_tree(case):
         tree.links.new(cube.outputs[0], inst.inputs["Instance"])
         source = inst.outputs[0]
     tree.links.new(source, node.inputs[0])
-    tree.links.new(node.outputs[0], o.inputs[0])
+    # Toast outputs: "store" = [[output, data type, domain, attribute name], ...] stored with Store
+    # Named Attribute; "delete" = a Boolean output used as Delete Geometry's selection.
+    last = node.outputs[0]
+    for output, data_type, domain, name in case.get("store", []):
+        store = tree.nodes.new("GeometryNodeStoreNamedAttribute")
+        store.data_type = data_type
+        store.domain = domain
+        store.inputs["Name"].default_value = name
+        tree.links.new(last, store.inputs["Geometry"])
+        tree.links.new(node.outputs[output], store.inputs["Value"])
+        last = store.outputs[0]
+    if case.get("delete"):
+        delete = tree.nodes.new("GeometryNodeDeleteGeometry")
+        delete.domain = case.get("delete_domain", "POINT")
+        tree.links.new(last, delete.inputs["Geometry"])
+        tree.links.new(node.outputs[case["delete"]], delete.inputs["Selection"])
+        last = delete.outputs[0]
+    tree.links.new(last, o.inputs[0])
     return tree, node
 
 
@@ -126,6 +143,7 @@ for case in json.load(open(CASES)):
     mod = obj.modifiers.new("t", "NODES")
     mod.node_group = tree
     out = dump(obj, case["input"])
+    out["outputs"] = [(s.name, s.type) for s in node.outputs]
     out["error"] = node.error
     out["warnings"] = [getattr(w, "message", str(w)) for w in mod.node_warnings]
     result[case["name"]] = out
