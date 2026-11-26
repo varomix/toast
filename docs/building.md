@@ -93,16 +93,19 @@ its own), run `build_files/toast/package_portable.sh` from the fork. It writes
 
 The tests need Python 3 with numpy and, for the Blender tests, the fork's Blender. Without
 `TOAST_BLENDER`, they look for `~/blender-git/build_linux_5.3/bin/blender` and skip the Blender
-tests if it isn't there.
+tests if it isn't there. The simplest Python to use is the one inside the Blender build, which
+already has numpy (a system Python may not have numpy, or may not allow installing it):
 
 ```sh
 cd ~/blender-git/blender/toast/addon
-python3 -m pip install numpy
 # macOS:
 export TOAST_BLENDER=~/blender-git/build_darwin/bin/Blender.app/Contents/MacOS/Blender
+PY=$(ls ~/blender-git/build_darwin/bin/Blender.app/Contents/Resources/*/python/bin/python3.* | head -1)
 # Linux:
 export TOAST_BLENDER=~/blender-git/build_linux/bin/blender
-python3 -m unittest discover -s tests -v
+PY=$(ls ~/blender-git/build_linux/bin/*/python/bin/python3.* | head -1)
+
+$PY -m unittest discover -s tests -v
 ```
 
 These include bit-for-bit comparisons between Blender's nodes and Toast's noise and random
