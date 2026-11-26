@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 import traceback
 from pathlib import Path
@@ -73,10 +74,17 @@ def _libraries(source):
     return collect_libraries(source, lib_resolver)
 
 
-def builtin_compiler_available():
-    """True when this Blender has the built-in kernel compiler (`lib/libtoast_jit`)."""
+def builtin_compiler_path():
+    """Where the Toast node looks for the built-in kernel compiler (see `load_jit` in the fork)."""
     program_dir = os.path.dirname(bpy.app.binary_path)
-    return os.path.exists(os.path.join(program_dir, "lib", "libtoast_jit.so"))
+    if sys.platform == "darwin":
+        return os.path.join(program_dir, "..", "Resources", "lib", "libtoast_jit.dylib")
+    return os.path.join(program_dir, "lib", "libtoast_jit.so")
+
+
+def builtin_compiler_available():
+    """True when this Blender has the built-in kernel compiler."""
+    return os.path.exists(builtin_compiler_path())
 
 
 def backend():

@@ -12,7 +12,7 @@ page has the short version and what is specific to Toast.
 | | Linux x64 | macOS (Apple silicon) | Windows |
 | --- | --- | --- | --- |
 | Toast node | yes | yes | not yet |
-| Built-in kernel compiler | yes | not yet: uses Xcode's `clang++` | not yet |
+| Built-in kernel compiler | yes | yes (new, being tested) | not yet |
 | C++ node plugins (Bricker) | yes | yes | not yet |
 | Portable package script | yes | no | no |
 
@@ -57,8 +57,10 @@ Start it from Terminal to see Toast's messages:
 ### Check that it works
 
 1. Preferences > Add-ons > Toast is enabled and says
-   `Built-in compiler: not in this Blender, in use: external`. On macOS, Toast compiles kernels
-   with Xcode's `clang++`, a little slower than the built-in compiler on Linux.
+   `Built-in compiler: available, in use: builtin`: Toast compiles kernels inside Blender
+   (`Blender.app/Contents/Resources/lib/libtoast_jit.dylib`, made from the clang and LLVM in
+   Blender's precompiled libraries). If it says `not in this Blender`, Toast falls back to Xcode's
+   `clang++`, which also works.
 2. Turn on Preferences > Save & Load > **Auto Run Python Scripts**.
 3. Add a Geometry Nodes modifier to a cube, then Add > Toast > Toast. In the sidebar (N) > Node >
    Toast, open **Templates** and pick "Displace with noise": the cube changes a moment later.
@@ -140,7 +142,6 @@ After editing `docs/guide.md`, regenerate the HTML guide with `python3 docs/buil
 
 ## Problems
 
-Both Linux x64 and macOS on Apple silicon pass the full test suite (on macOS, the comparison
-of the built-in and external compilers is skipped, since there is no built-in compiler yet) and
-the Bricker regression test. If the build or the tests fail for you, open an issue on
+Both Linux x64 and macOS on Apple silicon pass the full test suite and the Bricker regression
+test (macOS was tested with Xcode's `clang++`; the built-in compiler on macOS is new). If the build or the tests fail for you, open an issue on
 [varomix/toast](https://github.com/varomix/toast/issues) with the output.
