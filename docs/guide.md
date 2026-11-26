@@ -174,6 +174,10 @@ assigned value, or is `float`:
 
 Writing an attribute that doesn't exist creates it on the Run Over domain.
 
+To read an attribute that another node made, give it its type: `@previous: vec3`. Without one it
+is read as a float, and when that loses data (a vector read as a float, a float as an int), the
+node shows a warning naming the type to use.
+
 With Run Over Instances, `@position` is the location of the instance's transform: writing it
 moves the instance. When the code writes both `@transform` and `@position`, the location comes
 from `@position`.

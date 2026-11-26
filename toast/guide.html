@@ -228,6 +228,7 @@ location = m.translation                      <span class="comment"># also m.rot
 <span class="attr">@offset</span> = (<span class="number">0</span>, <span class="number">0</span>, <span class="number">1</span>)           <span class="comment"># a vec3, from the value</span>
 <span class="attr">@flag</span> = <span class="attr">@height</span> &gt; <span class="number">0.3</span></code></pre></figure>
 <p>Writing an attribute that doesn't exist creates it on the Run Over domain.</p>
+<p>To read an attribute that another node made, give it its type: <code>@previous: vec3</code>. Without one it is read as a float, and when that loses data (a vector read as a float, a float as an int), the node shows a warning naming the type to use.</p>
 <p>With Run Over Instances, <code>@position</code> is the location of the instance's transform: writing it moves the instance. When the code writes both <code>@transform</code> and <code>@position</code>, the location comes from <code>@position</code>.</p>
 <h3 id="parameters"><a class="anchor" href="#parameters">Parameters</a></h3>
 <p><code>param(name, default, min=, max=)</code> adds a socket to the node; its type comes from the default. The same name always refers to the same socket.</p>

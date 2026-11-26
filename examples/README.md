@@ -51,8 +51,8 @@ querying its neighbors.
   point numbers instead: in a run, points from `point_count(0)` on are the new points in the order
   they're added, and `add_edge()` and `set_point_attr()` take those numbers.
 - **Reading an attribute another node wrote needs its type.** `@previous` without an annotation is
-  a float, so a vec3 written by an earlier node reads wrong, silently (`fluid/relax.py` declares
-  `@previous: vec3`).
+  a float, so a vec3 written by an earlier node read wrong, silently. The node now warns about
+  it and names the type (`fluid/relax.py` declares `@previous: vec3`).
 - **Lists hold up to 4096 values** and `nearby_points()` visits up to 4096 points. The hair keeps
   32 points per strand, the tree a stack of 512 branches.
 - **Run Over Geometry is sequential**, see above.

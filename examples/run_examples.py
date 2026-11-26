@@ -84,9 +84,12 @@ def counts(geo):
     return out
 
 
+warnings = sorted({getattr(w, "message", str(w)) for o in scene.objects for m in o.modifiers
+                   if m.type == "NODES" for w in m.node_warnings})  # fmt: skip
 result = {
     "file": bpy.data.filepath,
     "errors": errors,
+    "warnings": warnings,
     "frames": frames,
     "counts": counts(geo),
     "ms_first": round(times[0], 1),

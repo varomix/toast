@@ -1166,6 +1166,11 @@ class TestBlenderRunOver(unittest.TestCase):
         {"name": "geometry_new_attrs", "run_over": "GEOMETRY", "code": NEW_POINT_SETS_CODE},
         {"name": "geometry_from_nothing", "run_over": "GEOMETRY", "empty": True,
          "code": NEW_POINT_SETS_CODE},
+        {"name": "type_warning", "run_over": "CORNERS", "code": "@u = @UVMap\n"},
+        {"name": "type_warning_input", "run_over": "FACES",
+         "code": "@u = point_attr(0, 'UVMap', 0)\n"},
+        {"name": "type_annotated", "run_over": "CORNERS",
+         "code": "@UVMap: vec2\n@u = @UVMap.x\n"},
         {"name": "neighbors", "run_over": "POINTS", "code": NEIGHBORS_CODE},
         {"name": "sets", "run_over": "FACES", "code": SETS_CODE},
         {"name": "corner_queries", "run_over": "CORNERS",
@@ -1261,6 +1266,17 @@ class TestBlenderRunOver(unittest.TestCase):
         for name in ("w", "tag"):
             mine = np.ascontiguousarray(out.points[name], np.float32).reshape(-1).view(np.uint32)
             self.assertEqual(r["attrs"][name]["values"], mine.tolist(), name)
+
+    def test_reading_an_attribute_as_another_type_warns(self):
+        # UVMap is a vec2: read without its type it would silently be a float.
+        r = self.r["type_warning"]
+        self.assertEqual(r["error"], "")
+        self.assertEqual(r["warnings"], ['"UVMap" is a vec2 on the geometry, but the code reads it '
+                                         'as a float. Give it its type: @UVMap: vec2'])  # fmt: skip
+        r = self.r["type_warning_input"]
+        self.assertEqual(len(r["warnings"]), 1)
+        self.assertIn("x: vec2 = ..._attr(0, \"UVMap\", ...)", r["warnings"][0])
+        self.ok("type_annotated")
 
     def harness_run(self, name, code, run_over):
         r = self.ok(name)
