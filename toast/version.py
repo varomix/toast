@@ -3,5 +3,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 # Bump when generated code changes, so cached kernels are rebuilt.
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 ABI_VERSION = 5

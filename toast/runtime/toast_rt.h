@@ -103,6 +103,8 @@ typedef struct ToastAttr {
  * - corner_point / corner_face: the point and face of a corner, -1 if it doesn't exist.
  * - cmd_set_attr: queues writing `value` to element `elem` of the attribute bound at `attr`
  *   (a writable binding). Applied after the run in (src, emission order), before topology.
+ *   `elem` may be a handle from cmd_add_point (point attributes): applied once the point is
+ *   added, before removals.
  * - ray_cast / closest_point: query the triangles of `input`'s mesh (as it was before the run).
  *   ray_cast normalizes `dir`; both ignore results farther than `max_dist`. Return out->hit.
  * - ncurves / curve_points: curve count of `input`'s curves, and the points of a curve in order

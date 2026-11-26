@@ -604,12 +604,20 @@ class _Host:
         self._chunk_list(cmd).append(("remove_point", src, pt, None))
 
 
-def _apply_sets(host, arrays):
-    """Apply set_point_attr/set_face_attr in (src, emission order), into the bound arrays."""
+def _new_point_set(payload, arrays, domains):
+    """A set_point_attr() on a point added in this run: a handle, or an index from the input's
+    point count on."""
+    attr, elem, _data = payload
+    return domains[attr] == "point" and (elem < 0 or elem >= len(arrays[attr]))
+
+
+def _apply_sets(host, arrays, domains):
+    """Apply set_point_attr/set_face_attr in (src, emission order), into the bound arrays.
+    Writes to points added in this run are left to _merge."""
     sets = []
     for chunk_id in sorted(host.cmds):
         for seq, c in enumerate(host.cmds[chunk_id]):
-            if c[0] == "set_attr":
+            if c[0] == "set_attr" and not _new_point_set(c[2], arrays, domains):
                 sets.append((c[1], chunk_id, seq, c[2]))
     sets.sort(key=lambda t: t[:3])
     for _src, _chunk, _seq, (attr, elem, data) in sets:
@@ -620,8 +628,11 @@ def _apply_sets(host, arrays):
         raw[elem] = np.frombuffer(data, dtype=np.uint8)
 
 
-def _merge(out, host, n_input_points, n_input_prims, run_over="points"):
-    """Apply queued commands to ``out`` (the copy of input 0). See the module docstring."""
+def _merge(out, host, n_input_points, n_input_prims, run_over="points", attr_names=(),
+           new_point_set=lambda payload: False):  # fmt: skip
+    """Apply queued commands to ``out`` (the copy of input 0). See the module docstring.
+    ``attr_names``: the name of each binding, and ``new_point_set(payload)`` whether a
+    set_point_attr() is for a point added in this run (see _new_point_set)."""
     if run_over == "instances":
         _merge_instances(out, host)
         return
@@ -641,6 +652,7 @@ def _merge(out, host, n_input_points, n_input_prims, run_over="points"):
     new_prims = []
     removed = set()
     removed_prims = set()
+    new_point_sets = []
     n_total = n_input_points
 
     # Indices from n_input_points on are points added in this run, in merged order.
@@ -657,7 +669,9 @@ def _merge(out, host, n_input_points, n_input_prims, run_over="points"):
 
     for _src, _chunk, _seq, (kind, _s, payload, handle) in all_cmds:
         if kind == "set_attr":
-            continue  # Applied before the merge, see _apply_sets.
+            if new_point_set(payload):  # A point added in this run: written once it exists.
+                new_point_sets.append(payload)
+            continue  # Others were applied before the merge, see _apply_sets.
         if kind == "add_point":
             handle_to_index[handle] = n_total
             new_positions.append(payload)
@@ -682,6 +696,11 @@ def _merge(out, host, n_input_points, n_input_prims, run_over="points"):
             out.points[name] = np.concatenate([arr, extra])
         if "position" not in out.points:
             out.points["position"] = np.array(new_positions, dtype=np.float32)
+    for attr, handle, data in new_point_sets:
+        index = resolve(handle)
+        arr = out.points[attr_names[attr]]
+        raw = arr.view(np.uint8).reshape(len(arr), -1)
+        raw[index] = np.frombuffer(data, dtype=np.uint8)
     out.prims.extend(new_prims)
     if new_prims:
         for name, arr in list(out.prim_attrs.items()):
@@ -872,9 +891,11 @@ def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=N
 
     # Chunk ids were offset by one so the cmd pointer is never null.
     host.cmds = {cid - 1: lst for cid, lst in host.cmds.items()}
-    _apply_sets(host, keep_alive)
+    domains = [a.get("domain", "point") for a in sig["attrs"]]
+    _apply_sets(host, keep_alive, domains)
     if position_writeback is not None:
         out.instance_attrs["transform"][:, 3, :3] = position_writeback
-    _merge(out, host, out.npoints, n_input_prims, run_over)
+    _merge(out, host, out.npoints, n_input_prims, run_over, [a["name"] for a in sig["attrs"]],
+           lambda payload: _new_point_set(payload, keep_alive, domains))
     del keep_alive
     return out

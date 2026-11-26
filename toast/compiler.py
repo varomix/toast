@@ -1377,9 +1377,10 @@ class Compiler:
         if name in SPECIAL_NAMES:
             self.err(f"{fname}(): '{name}' is read-only", node)
         j = self.expr(a_j)
-        if j.type == POINTREF:
-            self.err(f"{fname}(): elements added in this run can't be written", node)
-        jc = self.coerce(j, INT, a_j, f"{fname}() index")
+        # A point added in this run (add_point's handle): the host writes it once it exists.
+        if j.type == POINTREF and domain != "point":
+            self.err(f"{fname}(): needs a face index, not a point added with add_point()", node)
+        jc = j.code if j.type == POINTREF else self.coerce(j, INT, a_j, f"{fname}() index")
         typed = name in self.declared or name in KNOWN_ATTRS
         value = self.expr(a_value, self._attr_type(name, node) if typed else None)
         if value.type not in BY_NAME.values():

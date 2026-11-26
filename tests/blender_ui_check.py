@@ -91,5 +91,8 @@ result["registered"] = {
     "icon": blender_addon._icons is not None and "toast" in blender_addon._icons,
     "text_menu": blender_addon._draw_text_menu in bpy.types.TEXT_MT_text._dyn_ui_initialize(),
     "text_header": blender_addon._draw_text_header in bpy.types.TEXT_HT_header._dyn_ui_initialize(),
+    "help_menu": blender_addon._draw_help_menu in bpy.types.TOPBAR_MT_help._dyn_ui_initialize(),
+    "guide_operator": hasattr(bpy.ops.toast, "open_guide"),
+    "guide_file": blender_addon.GUIDE_PATH.is_file(),
 }
 print("RESULT " + json.dumps(result))

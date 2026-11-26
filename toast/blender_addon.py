@@ -61,6 +61,9 @@ COMPILE_SHORTCUT = "Cmd+Enter" if sys.platform == "darwin" else "Ctrl+Enter"
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 ICON_PATH = Path(__file__).resolve().parent / "icons" / "toast.png"
+# The HTML guide (built from docs/guide.md by docs/build_guide.py), and where it is online.
+GUIDE_PATH = Path(__file__).resolve().parent / "guide.html"
+GUIDE_URL = "https://github.com/varomix/toast/blob/main/docs/guide.md"
 # bpy.utils.previews collection holding the Toast icon, created in register().
 _icons = None
 
@@ -415,10 +418,32 @@ class TOAST_MT_templates(bpy.types.Menu):
         for stem, label, run_over, desc in templates():
             op = layout.operator("toast.template", text=label)
             op.template = stem
+        layout.separator()
+        layout.operator("toast.open_guide", icon="HELP")
 
 
 def _draw_text_templates(self, context):
     self.layout.menu(TOAST_MT_templates.bl_idname, icon_value=icon_id())
+
+
+class TOAST_OT_open_guide(bpy.types.Operator):
+    """Open the Toast guide (language, builtins, cookbook) in a web browser"""
+
+    bl_idname = "toast.open_guide"
+    bl_label = "Toast Guide"
+
+    def execute(self, context):
+        url = GUIDE_PATH.as_uri() if GUIDE_PATH.exists() else GUIDE_URL
+        if "FINISHED" not in bpy.ops.wm.url_open(url=url):
+            self.report({"WARNING"}, f"Couldn't open a web browser: {url}")
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+def _draw_help_menu(self, context):
+    """Help menu entry."""
+    self.layout.separator()
+    self.layout.operator("toast.open_guide", icon_value=icon_id())
 
 
 class TOAST_OT_compile(bpy.types.Operator):
@@ -604,6 +629,7 @@ class NODE_PT_toast(bpy.types.Panel):
         row.operator("toast.edit_text", icon="TEXT")
         row.operator_menu_enum("toast.template", "template", text="Templates", icon="PRESET")
         row.operator("toast.compile", text="", icon="FILE_REFRESH")
+        row.operator("toast.open_guide", text="", icon="HELP")
         op = layout.operator("toast.compile_node", text=f"Compile ({COMPILE_SHORTCUT})",
                              icon_value=icon_id())  # fmt: skip
         op.tree = node.id_data.name
@@ -659,6 +685,7 @@ class TEXT_PT_toast(bpy.types.Panel):
                 if loc is not None and loc[0] == text:
                     _draw_status(layout, node)
                     break
+            layout.operator("toast.open_guide", icon="HELP")
             return
         for node in nodes:
             box = layout.box()
@@ -672,6 +699,7 @@ class TEXT_PT_toast(bpy.types.Panel):
             layout.prop(prefs, "auto_compile")
         layout.label(text="Don't press Run Script: Toast code", icon="INFO")
         layout.label(text="isn't plain Python.", icon="BLANK1")
+        layout.operator("toast.open_guide", icon="HELP")
 
 
 class TOAST_AddonPreferences(bpy.types.AddonPreferences):
@@ -713,9 +741,11 @@ class TOAST_AddonPreferences(bpy.types.AddonPreferences):
         for d in library_dirs():
             layout.label(text=f"    {d}")
         layout.label(text="External compiler: $TOAST_CXX, else clang++, else g++")
+        layout.operator("toast.open_guide", icon="HELP")
 
 
-CLASSES = (TOAST_OT_new_text, TOAST_OT_template, TOAST_MT_templates, TOAST_OT_compile,
+CLASSES = (TOAST_OT_new_text, TOAST_OT_template, TOAST_MT_templates, TOAST_OT_open_guide,
+           TOAST_OT_compile,
            TOAST_OT_compile_text, TOAST_OT_compile_node,
            TOAST_OT_edit_text, TOAST_OT_show_error, NODE_PT_toast, TEXT_PT_toast,
            TOAST_AddonPreferences)  # fmt: skip
@@ -734,6 +764,7 @@ def register():
     bpy.types.TEXT_MT_templates.append(_draw_text_templates)
     bpy.types.TEXT_MT_text.append(_draw_text_menu)
     bpy.types.TEXT_HT_header.append(_draw_text_header)
+    bpy.types.TOPBAR_MT_help.append(_draw_help_menu)
     bpy.app.handlers.load_post.append(_on_load)
     bpy.app.timers.register(_tick, first_interval=POLL_SECONDS, persistent=True)
     _register_keymap()
@@ -761,6 +792,7 @@ def unregister():
     bpy.types.TEXT_MT_templates.remove(_draw_text_templates)
     bpy.types.TEXT_MT_text.remove(_draw_text_menu)
     bpy.types.TEXT_HT_header.remove(_draw_text_header)
+    bpy.types.TOPBAR_MT_help.remove(_draw_help_menu)
     for km, kmi in _keymap_items:
         km.keymap_items.remove(kmi)
     _keymap_items.clear()

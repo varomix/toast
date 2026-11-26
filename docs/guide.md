@@ -26,6 +26,9 @@ away, press **Ctrl+Enter** (**Cmd+Enter** on macOS) in the Text Editor, or use *
 Text Editor header and its Text menu, on the Toast node, and in the node's Toast panel. Don't
 press Run Script: Toast code isn't plain Python.
 
+For complete scenes (flocking, hair, fluid, reaction-diffusion, growth, fractals, a tree), open
+the [example files](https://github.com/varomix/toast/tree/main/examples).
+
 ### Editing
 
 - **Auto Compile** (on by default, in the Toast panels and the add-on preferences): turn it off
@@ -42,6 +45,8 @@ press Run Script: Toast code isn't plain Python.
   (N) > Toast, with **Go to Error**, which puts the cursor on the line (also inside a library).
 - **Status**: the Toast panels say whether the code is up to date, waiting for you to stop
   typing, or reused from an earlier compile.
+- **Toast Guide** opens this guide in a web browser: Help > Toast Guide, the **?** button in the
+  node's Toast panel, the Text Editor's sidebar (N) > Toast, and Templates > Toast.
 
 ## The node
 
@@ -314,7 +319,7 @@ attributes the code is writing.
 | `remove_face(f)` | Removes a face and keeps its points (like Delete Geometry, Only Faces). |
 | `remove_curve(c)` | Removes a curve and its points. |
 | `remove_instance(i)` | Removes an instance (Run Over Instances). |
-| `set_point_attr(index, "name", value)`, `set_face_attr(...)` | Writes another element's attribute. |
+| `set_point_attr(index, "name", value)`, `set_face_attr(...)` | Writes another element's attribute. `set_point_attr()` also writes points added in the same run: pass what `add_point()` returned, or the point's number (see the grid example below). |
 
 These are applied after the run in element order: new elements are numbered by the element that
 created them, and when several elements write the same attribute, the highest index wins. On

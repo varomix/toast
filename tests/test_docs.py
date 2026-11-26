@@ -51,6 +51,22 @@ class TestGuide(unittest.TestCase):
                               capture_output=True, text=True)  # fmt: skip
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
+    def test_every_example_kernel_compiles(self):
+        from toast.compiler import collect_libraries
+
+        src = ROOT / "examples" / "src"
+        libs = {f"toast_lib.{p.stem[4:]}": p.read_text() for p in src.glob("*/lib_*.py")}
+        kernels = [p for p in sorted(src.glob("*/*.py")) if not p.stem.startswith("lib_")]
+        self.assertGreaterEqual(len(kernels), 15)
+        for path in kernels:
+            code = path.read_text()
+            first = code.split("\n", 1)[0]
+            run_over = next((k for k in ("points", "faces", "curves", "instances", "geometry")
+                             if f"Run Over: {k.title()}" in first), "points")  # fmt: skip
+            with self.subTest(kernel=f"{path.parent.name}/{path.name}"):
+                toast.compile_source(code, run_over=run_over,
+                                     libs=collect_libraries(code, libs.get))  # fmt: skip
+
     def test_every_template_compiles(self):
         templates = sorted((ROOT / "toast" / "templates").glob("*.py"))
         self.assertGreaterEqual(len(templates), 9)

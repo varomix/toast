@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-"""Build docs/guide.html from docs/guide.md: one self-contained page (no network needed), with a
+"""Build toast/guide.html from docs/guide.md: one self-contained page (no network needed), with a
 contents sidebar, light and dark themes and highlighted Toast code.
 
-  python3 docs/build_guide.py          # writes docs/guide.html
+  python3 docs/build_guide.py          # writes toast/guide.html (shipped with the add-on)
   python3 docs/build_guide.py --check  # exit 1 if guide.html is out of date
 
 Handles the Markdown the guide uses: headings, paragraphs, lists, tables, fenced code, inline
@@ -69,6 +69,16 @@ def slug(text, used):
     return s
 
 
+# The page is installed with the add-on, away from the other docs: they link to the repository.
+DOCS_URL = "https://github.com/varomix/toast/blob/main/docs/"
+
+
+def link(target):
+    if re.fullmatch(r"[\w-]+\.md(#[\w-]*)?", target):
+        return DOCS_URL + target
+    return target
+
+
 def inline(text):
     """Inline code, bold and links. Code spans are cut out first so their content stays literal."""
     parts = re.split(r"(`[^`]+`)", text)
@@ -79,7 +89,7 @@ def inline(text):
             continue
         t = html.escape(part, quote=False)
         t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
-        t = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', t)
+        t = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", lambda m: f'<a href="{link(m.group(2))}">{m.group(1)}</a>', t)
         out.append(t)
     return "".join(out)
 
@@ -451,10 +461,10 @@ def build(md_text):
 def main():
     md = (DOCS / "guide.md").read_text()
     page = build(md)
-    target = DOCS / "guide.html"
+    target = DOCS.parent / "toast" / "guide.html"
     if "--check" in sys.argv:
         if not target.exists() or target.read_text() != page:
-            print("docs/guide.html is out of date: run python3 docs/build_guide.py")
+            print("toast/guide.html is out of date: run python3 docs/build_guide.py")
             sys.exit(1)
         return
     target.write_text(page)

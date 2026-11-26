@@ -502,6 +502,32 @@ class TestRunOver(unittest.TestCase):
         np.testing.assert_array_equal(out.prim_attrs["w2"], [20 + 3 + 7, 60 + 3 + 7])
         np.testing.assert_array_equal(out.prim_attrs["w"], [10, 30])
 
+    def test_set_point_attr_on_added_points(self):
+        # Values land on the new points, the last write wins, and removals renumber them.
+        src = (
+            "@w: float\n"
+            "@k: int\n"
+            "prev = add_point((0, 0, 0))\n"
+            "set_point_attr(prev, 'w', 0.5)\n"
+            "for k in range(1, 4):\n"
+            "    p = add_point((k, 0, 0))\n"
+            "    add_edge(prev, p)\n"
+            "    set_point_attr(p, 'w', k * 1.5)\n"
+            "    set_point_attr(p, 'w', k * 2.5)\n"
+            "    set_point_attr(p, 'k', k)\n"
+            "    prev = p\n"
+            "set_point_attr(0, 'w', 9.0)\n"
+            "set_point_attr(point_count(0) + 1, 'k', 7)\n"  # the second new point, by index
+            "remove_point(0)\n"
+        )
+        k = toast.build(src, run_over="geometry")
+        geo = Geometry({"position": np.array([[5, 5, 5], [6, 6, 6]], np.float32)})
+        out = run(k, [geo])
+        np.testing.assert_array_equal(out.points["position"][:, 0], [6, 0, 1, 2, 3])
+        np.testing.assert_array_equal(out.points["w"], [0, 0.5, 2.5, 5, 7.5])
+        np.testing.assert_array_equal(out.points["k"], [0, 0, 7, 2, 3])
+        self.assertEqual(out.prims, [[1, 2], [2, 3], [3, 4]])
+
     def test_geometry_builds_geometry(self):
         src = (
             "count = param('count', 4)\n"
@@ -592,7 +618,7 @@ class TestTopologyQueries(unittest.TestCase):
         for src, msg in (
             ("set_point_attr(0, 'index', 1)\n", "is read-only"),
             ("@a: int\nset_point_attr(0, 'a', vec3(1, 2, 3))\n", "expected int, got vec3"),
-            ("set_point_attr(add_point((0, 0, 0)), 'a', 1.0)\n", "added in this run"),
+            ("set_face_attr(add_point((0, 0, 0)), 'a', 1.0)\n", "not a point added"),
         ):
             with self.subTest(src=src):
                 with self.assertRaises(toast.ToastError) as cm:
@@ -1103,6 +1129,20 @@ NEIGHBORS_CODE = (
     "    k += 1\n"
     "@nf = k\n"
 )
+NEW_POINT_SETS_CODE = (
+    "@w: float\n"
+    "@tag: vec3\n"
+    "base = add_point((0, 0, 9))\n"
+    "set_point_attr(base, 'w', 0.25)\n"
+    "for k in range(4):\n"
+    "    p = add_point((k, 0, 9))\n"
+    "    add_edge(base, p)\n"
+    "    set_point_attr(p, 'w', k + 1.5)\n"
+    "    set_point_attr(p, 'tag', (k, 2 * k, 3))\n"
+    "set_point_attr(0, 'w', 7.0)\n"
+    "set_point_attr(point_count(0) + 2, 'w', 42.0)\n"  # the third new point, by index
+    "remove_point(1)\n"
+)
 SETS_CODE = (
     "@touched: int\n"
     "for p in face_points(0, @index, 8):\n"
@@ -1123,6 +1163,9 @@ class TestBlenderRunOver(unittest.TestCase):
         {"name": "geometry", "run_over": "GEOMETRY",
          "code": "for k in range(3):\n    p = add_point((k, 5, 0))\n    add_edge(0, p)\n"},
         {"name": "geometry_attr", "run_over": "GEOMETRY", "code": "@position = (0, 0, 0)\n"},
+        {"name": "geometry_new_attrs", "run_over": "GEOMETRY", "code": NEW_POINT_SETS_CODE},
+        {"name": "geometry_from_nothing", "run_over": "GEOMETRY", "empty": True,
+         "code": NEW_POINT_SETS_CODE},
         {"name": "neighbors", "run_over": "POINTS", "code": NEIGHBORS_CODE},
         {"name": "sets", "run_over": "FACES", "code": SETS_CODE},
         {"name": "corner_queries", "run_over": "CORNERS",
@@ -1196,6 +1239,28 @@ class TestBlenderRunOver(unittest.TestCase):
         for k in range(3):
             self.assertIn(sorted([0, n_in + k]), [sorted(e) for e in r["edges"]])
         self.assertEqual(len(r["faces"]), len(r["input"]["faces"]))
+
+    def test_set_point_attr_on_added_points_matches_harness(self):
+        r, out = self.harness_run("geometry_new_attrs", NEW_POINT_SETS_CODE, "geometry")
+        self.assertEqual(r["P"], np.ascontiguousarray(out.points["position"], np.float32)
+                         .reshape(-1).view(np.uint32).tolist())  # fmt: skip
+        self.assertEqual(r["faces"], [f for f in out.prims if len(f) > 2])
+        blender_edges = {tuple(sorted(e)) for e in r["edges"]}
+        for e in (f for f in out.prims if len(f) == 2):
+            self.assertIn(tuple(sorted(e)), blender_edges)
+        for name in ("w", "tag"):
+            mine = np.ascontiguousarray(out.points[name], np.float32).reshape(-1).view(np.uint32)
+            self.assertEqual(r["attrs"][name]["values"], mine.tolist(), name)
+
+    def test_set_point_attr_building_from_nothing(self):
+        # On an empty mesh, the attributes the code creates survive adding the points.
+        r = self.ok("geometry_from_nothing")
+        out = run(toast.build(NEW_POINT_SETS_CODE, run_over="geometry"),
+                  [Geometry({"position": np.zeros((0, 3), np.float32)})])  # fmt: skip
+        self.assertEqual(len(r["P"]), 3 * out.npoints)
+        for name in ("w", "tag"):
+            mine = np.ascontiguousarray(out.points[name], np.float32).reshape(-1).view(np.uint32)
+            self.assertEqual(r["attrs"][name]["values"], mine.tolist(), name)
 
     def harness_run(self, name, code, run_over):
         r = self.ok(name)
@@ -1588,7 +1653,9 @@ class TestBlenderEditor(unittest.TestCase):
     def test_registered(self):
         self.assertEqual(self.r["registered"], {"panel": True, "menu": True,
                                                 "text_templates_menu": True, "icon": True,
-                                                "text_menu": True, "text_header": True})  # fmt: skip
+                                                "text_menu": True, "text_header": True,
+                                                "help_menu": True, "guide_operator": True,
+                                                "guide_file": True})  # fmt: skip
 
 
 if __name__ == "__main__":

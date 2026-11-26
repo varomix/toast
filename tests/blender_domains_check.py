@@ -30,7 +30,8 @@ def dump(mesh):
     out = {"position": None, "faces": [list(f.vertices) for f in mesh.polygons],
            "edges": [list(e.vertices) for e in mesh.edges], "attrs": {}}
     pos = [0.0] * (3 * len(mesh.vertices))
-    mesh.attributes["position"].data.foreach_get("vector", pos)
+    if pos:  # A mesh without points may have no position attribute.
+        mesh.attributes["position"].data.foreach_get("vector", pos)
     out["P"] = bits(pos)
     for a in mesh.attributes:
         if a.name.startswith(".") or a.name == "position":
@@ -59,8 +60,12 @@ def dump(mesh):
 
 result = {}
 for case in json.load(open(CASES)):
-    bpy.ops.mesh.primitive_grid_add(x_subdivisions=4, y_subdivisions=3, size=2)
-    obj = bpy.context.active_object
+    if case.get("empty"):  # An object whose mesh has no elements at all.
+        obj = bpy.data.objects.new("empty", bpy.data.meshes.new("empty"))
+        bpy.context.scene.collection.objects.link(obj)
+    else:
+        bpy.ops.mesh.primitive_grid_add(x_subdivisions=4, y_subdivisions=3, size=2)
+        obj = bpy.context.active_object
     src = dump(obj.data)
     tree = bpy.data.node_groups.new("t", "GeometryNodeTree")
     tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
