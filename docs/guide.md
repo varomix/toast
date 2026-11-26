@@ -21,11 +21,17 @@ n = noise(@position * param("freq", 4.0))
    **New** to create a text with starter code, or pick one from **Templates**.
 
 The node recompiles a moment after you stop typing: Blender's built-in compiler turns the code
-into native code in about 0.1 s, and reopening a file reuses the compiled code. Don't press Run
-Script in the Text Editor: Toast code isn't plain Python.
+into native code in about 0.1 s, and reopening a file reuses the compiled code. To compile right
+away, press **Ctrl+Enter** (**Cmd+Enter** on macOS) in the Text Editor, or use **Compile**: in the
+Text Editor header and its Text menu, on the Toast node, and in the node's Toast panel. Don't
+press Run Script: Toast code isn't plain Python.
 
 ### Editing
 
+- **Auto Compile** (on by default, in the Toast panels and the add-on preferences): turn it off
+  when the code is heavy and you don't want it to run while you type. Then edits compile only
+  with **Ctrl+Enter** / **Cmd+Enter** or a **Compile** button, and the panels say when the code
+  has changed but isn't compiled. Opening a file still compiles what its nodes need.
 - **Follow Active Node** (on by default, in the Toast panel and the add-on preferences): selecting
   a Toast node shows its code in the Text Editor of the same window. Turn it off to keep the
   Text Editor on whatever you are editing.

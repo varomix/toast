@@ -53,6 +53,11 @@ _pending = {}
 _status = {}
 # screen pointer -> pointer of the Toast node whose code that screen's Text Editor last showed.
 _followed = {}
+# Pointers of nodes whose code changed while Auto Compile is off (compile with Ctrl+Enter).
+_edited = set()
+# Add-on keymap items (Ctrl+Enter / Cmd+Enter in the Text Editor), removed in unregister().
+_keymap_items = []
+COMPILE_SHORTCUT = "Cmd+Enter" if sys.platform == "darwin" else "Ctrl+Enter"
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 ICON_PATH = Path(__file__).resolve().parent / "icons" / "toast.png"
@@ -173,11 +178,12 @@ def _compile_node(node, source, run_over, source_hash, lib_error=None):
     _assign(node, kernel_path=str(kernel.so_path), error="", source_hash=source_hash)
 
 
-def update_node(node, force=False, debounce=True):
+def update_node(node, force=False, debounce=True, edits=True):
     """Compile ``node``'s code if it changed or its kernel is missing. Returns True if it did.
 
     ``debounce`` waits for edits to settle; off when nobody is typing (e.g. a file just loaded
-    with kernels from an older Toast)."""
+    with kernels from an older Toast). Without ``edits`` (Auto Compile off), changed code is only
+    noted, not compiled; a missing kernel is still built, since the node can't run without one."""
     source = node.text.as_string() if node.text else ""
     run_over = RUN_OVER.get(node.run_over, "points")
     lib_error = None
@@ -189,8 +195,14 @@ def update_node(node, force=False, debounce=True):
     h = _source_hash(source, run_over, libs) + ("" if lib_error is None else "!")
     stale = node.source_hash != h
     missing = bool(node.kernel_path) and not os.path.exists(node.kernel_path)
+    key = node.as_pointer()
     if not (force or stale or missing):
-        _pending.pop(node.as_pointer(), None)
+        _pending.pop(key, None)
+        _edited.discard(key)
+        return False
+    if stale and not (force or missing or edits):
+        _pending.pop(key, None)
+        _edited.add(key)
         return False
     if stale and not force and debounce:
         # Debounce edits: wait until the source has been stable for a moment.
@@ -203,7 +215,8 @@ def update_node(node, force=False, debounce=True):
                 return False
         elif now - seen[1] < DEBOUNCE_SECONDS:
             return False
-    _pending.pop(node.as_pointer(), None)
+    _pending.pop(key, None)
+    _edited.discard(key)
     _compile_node(node, source, run_over, h, lib_error)
     return True
 
@@ -245,10 +258,17 @@ def _follow_active_nodes():
                 break
 
 
-def _tick(debounce=True):
+def auto_compile():
+    """The Auto Compile preference (on when the add-on preferences aren't available)."""
+    prefs = _prefs()
+    return prefs is None or prefs.auto_compile
+
+
+def _tick(debounce=True, edits=None):
+    edits = auto_compile() if edits is None else edits
     try:
         for node in list(_toast_nodes()):
-            update_node(node, debounce=debounce)
+            update_node(node, debounce=debounce, edits=edits)
         _follow_active_nodes()
     except Exception:
         traceback.print_exc()
@@ -260,7 +280,9 @@ def _on_load(_file):
     _pending.clear()
     _status.clear()
     _followed.clear()
-    _tick(debounce=False)
+    _edited.clear()
+    # A loaded file isn't an edit: build what its nodes need, even with Auto Compile off.
+    _tick(debounce=False, edits=True)
 
 
 # ---------------------------------------------------------------------------- UI
@@ -400,7 +422,7 @@ def _draw_text_templates(self, context):
 
 
 class TOAST_OT_compile(bpy.types.Operator):
-    """Recompile the code of every Toast node now"""
+    """Recompile the code of every Toast node now, even if it is up to date"""
 
     bl_idname = "toast.compile"
     bl_label = "Recompile Toast Code"
@@ -412,6 +434,79 @@ class TOAST_OT_compile(bpy.types.Operator):
             count += 1
         self.report({"INFO"}, f"Compiled {count} Toast node(s)")
         return {"FINISHED"}
+
+
+def _is_toast_text(text):
+    return text is not None and (text.name.startswith(LIB_PACKAGE + ".") or
+                                 any(n.text == text for n in _toast_nodes()))  # fmt: skip
+
+
+class TOAST_OT_compile_text(bpy.types.Operator):
+    """Compile the Toast code in this Text Editor now (and the nodes using a library you edit)"""
+
+    bl_idname = "toast.compile_text"
+    bl_label = "Compile Toast Code"
+
+    @classmethod
+    def poll(cls, context):
+        space = context.space_data
+        # Only for Toast code, so the shortcut keeps its usual meaning elsewhere.
+        return space is not None and space.type == "TEXT_EDITOR" and _is_toast_text(space.text)
+
+    def execute(self, context):
+        text = context.space_data.text
+        compiled, errors = 0, []
+        for node in list(_toast_nodes()):
+            # Nodes using an edited library are out of date too: their hash includes it.
+            if node.text == text or text.name.startswith(LIB_PACKAGE + "."):
+                if update_node(node, debounce=False, edits=True):
+                    compiled += 1
+                if node.error:
+                    errors.append(node.error.splitlines()[0])
+        if errors:
+            self.report({"WARNING"}, errors[0])
+        elif compiled:
+            self.report({"INFO"}, f"Compiled {compiled} Toast node(s)")
+        else:
+            self.report({"INFO"}, "Toast code is up to date")
+        return {"FINISHED"}
+
+
+class TOAST_OT_compile_node(bpy.types.Operator):
+    """Compile this Toast node's code now"""
+
+    bl_idname = "toast.compile_node"
+    bl_label = "Compile"
+
+    tree: bpy.props.StringProperty(options={"SKIP_SAVE", "HIDDEN"})
+    node: bpy.props.StringProperty(options={"SKIP_SAVE", "HIDDEN"})
+
+    def execute(self, context):
+        tree = bpy.data.node_groups.get(self.tree)
+        node = tree.nodes.get(self.node) if tree else _active_toast_node(context)
+        if node is None or node.bl_idname != NODE_IDNAME:
+            self.report({"WARNING"}, "No Toast node to compile")
+            return {"CANCELLED"}
+        compiled = update_node(node, debounce=False, edits=True)
+        if node.error:
+            self.report({"WARNING"}, node.error.splitlines()[0])
+        else:
+            self.report({"INFO"}, "Compiled" if compiled else "Toast code is up to date")
+        return {"FINISHED"}
+
+
+def _draw_text_menu(self, context):
+    """Text Editor > Text menu entry (shows the shortcut; greyed out for texts that aren't Toast)."""
+    layout = self.layout
+    layout.separator()
+    layout.operator("toast.compile_text", icon_value=icon_id())
+
+
+def _draw_text_header(self, context):
+    """A Compile button in the Text Editor header, for Toast code only."""
+    space = context.space_data
+    if space is not None and _is_toast_text(space.text):
+        self.layout.operator("toast.compile_text", text="Compile", icon_value=icon_id())
 
 
 class TOAST_OT_edit_text(bpy.types.Operator):
@@ -471,7 +566,10 @@ def _draw_status(layout, node):
             op.tree = node.id_data.name
             op.node = node.name
         return
-    if node.as_pointer() in _pending:
+    if node.as_pointer() in _edited:
+        layout.label(text="Code changed, not compiled", icon="INFO")
+        layout.label(text=f"{COMPILE_SHORTCUT} in the Text Editor compiles it", icon="BLANK1")
+    elif node.as_pointer() in _pending:
         layout.label(text="Compiling when you stop typing...", icon="SORTTIME")
     elif state == "cached":
         layout.label(text="Up to date (compiled earlier)", icon="CHECKMARK")
@@ -506,10 +604,16 @@ class NODE_PT_toast(bpy.types.Panel):
         row.operator("toast.edit_text", icon="TEXT")
         row.operator_menu_enum("toast.template", "template", text="Templates", icon="PRESET")
         row.operator("toast.compile", text="", icon="FILE_REFRESH")
+        op = layout.operator("toast.compile_node", text=f"Compile ({COMPILE_SHORTCUT})",
+                             icon_value=icon_id())  # fmt: skip
+        op.tree = node.id_data.name
+        op.node = node.name
         layout.prop(node, "run_over")
         prefs = _prefs()
         if prefs is not None:
-            layout.prop(prefs, "follow_active_node")
+            col = layout.column(align=True)
+            col.prop(prefs, "auto_compile")
+            col.prop(prefs, "follow_active_node")
         _draw_status(layout, node)
         if node.signature and not node.error:
             try:
@@ -561,8 +665,13 @@ class TEXT_PT_toast(bpy.types.Panel):
             box.label(text=f"{node.id_data.name} > {node.name}", icon="NODE")
             box.label(text=f"Run Over: {node.bl_rna.properties['run_over'].enum_items[node.run_over].name}")
             _draw_status(box, node)
+        row = layout.row()
+        row.operator("toast.compile_text", text=f"Compile ({COMPILE_SHORTCUT})", icon="FILE_REFRESH")
+        prefs = _prefs()
+        if prefs is not None:
+            layout.prop(prefs, "auto_compile")
         layout.label(text="Don't press Run Script: Toast code", icon="INFO")
-        layout.label(text="recompiles by itself.", icon="BLANK1")
+        layout.label(text="isn't plain Python.", icon="BLANK1")
 
 
 class TOAST_AddonPreferences(bpy.types.AddonPreferences):
@@ -578,6 +687,12 @@ class TOAST_AddonPreferences(bpy.types.AddonPreferences):
         ),
         default="AUTO",
     )
+    auto_compile: bpy.props.BoolProperty(
+        name="Auto Compile",
+        description="Compile Toast code a moment after you stop typing. Turn off for heavy "
+        f"code and compile with {COMPILE_SHORTCUT} in the Text Editor instead",
+        default=True,
+    )
     follow_active_node: bpy.props.BoolProperty(
         name="Follow Active Node",
         description="When you select a Toast node, show its code in the Text Editor of the same "
@@ -588,7 +703,9 @@ class TOAST_AddonPreferences(bpy.types.AddonPreferences):
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "backend")
+        layout.prop(self, "auto_compile")
         layout.prop(self, "follow_active_node")
+        layout.label(text=f"{COMPILE_SHORTCUT} in the Text Editor compiles Toast code now")
         layout.label(text=f"Built-in compiler: {'available' if builtin_compiler_available() else 'not in this Blender'}"
                      f", in use: {backend()}")
         layout.label(text=f"Toast {VERSION}. Kernel cache: {cache_dir()}", icon_value=icon_id())
@@ -599,6 +716,7 @@ class TOAST_AddonPreferences(bpy.types.AddonPreferences):
 
 
 CLASSES = (TOAST_OT_new_text, TOAST_OT_template, TOAST_MT_templates, TOAST_OT_compile,
+           TOAST_OT_compile_text, TOAST_OT_compile_node,
            TOAST_OT_edit_text, TOAST_OT_show_error, NODE_PT_toast, TEXT_PT_toast,
            TOAST_AddonPreferences)  # fmt: skip
 
@@ -614,8 +732,23 @@ def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.TEXT_MT_templates.append(_draw_text_templates)
+    bpy.types.TEXT_MT_text.append(_draw_text_menu)
+    bpy.types.TEXT_HT_header.append(_draw_text_header)
     bpy.app.handlers.load_post.append(_on_load)
     bpy.app.timers.register(_tick, first_interval=POLL_SECONDS, persistent=True)
+    _register_keymap()
+
+
+def _register_keymap():
+    """Ctrl+Enter (and Cmd+Enter on macOS) in the Text Editor: compile the Toast code now."""
+    kc = bpy.context.window_manager.keyconfigs.addon
+    if kc is None:  # Background mode has no key configurations.
+        return
+    km = kc.keymaps.new(name="Text", space_type="TEXT_EDITOR")
+    for key in ("RET", "NUMPAD_ENTER"):
+        _keymap_items.append((km, km.keymap_items.new("toast.compile_text", key, "PRESS", ctrl=True)))
+        if sys.platform == "darwin":
+            _keymap_items.append((km, km.keymap_items.new("toast.compile_text", key, "PRESS", oskey=True)))
 
 
 def unregister():
@@ -626,6 +759,11 @@ def unregister():
     if _on_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_on_load)
     bpy.types.TEXT_MT_templates.remove(_draw_text_templates)
+    bpy.types.TEXT_MT_text.remove(_draw_text_menu)
+    bpy.types.TEXT_HT_header.remove(_draw_text_header)
+    for km, kmi in _keymap_items:
+        km.keymap_items.remove(kmi)
+    _keymap_items.clear()
     global _icons
     if _icons is not None:
         bpy.utils.previews.remove(_icons)

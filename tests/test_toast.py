@@ -1578,9 +1578,17 @@ class TestBlenderEditor(unittest.TestCase):
         self.assertEqual(self.r["status"][0], "ok")
         self.assertEqual(self.r["status_again"][0], "cached")
 
+    def test_auto_compile_off(self):
+        self.assertEqual(self.r["auto_compile"], {"skipped": True, "noted": True,
+                                                  "compiled_manually": True,
+                                                  "missing_kernel_built": True,
+                                                  "auto_on_compiles": True,
+                                                  "compile_button": True})  # fmt: skip
+
     def test_registered(self):
         self.assertEqual(self.r["registered"], {"panel": True, "menu": True,
-                                                "text_templates_menu": True, "icon": True})  # fmt: skip
+                                                "text_templates_menu": True, "icon": True,
+                                                "text_menu": True, "text_header": True})  # fmt: skip
 
 
 if __name__ == "__main__":
