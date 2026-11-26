@@ -26,7 +26,7 @@ s_rot: list[quat] = [quat()] * 512
 s_len = [0.0] * 512                    # full length of the branch
 s_radius = [0.0] * 512
 s_depth = [0] * 512
-s_id = [0] * 512                       # a number for random()
+s_id = [0] * 512                       # the branch's number, for random()
 
 add_point((0, 0, 0))
 root = next_point
@@ -35,9 +35,8 @@ set_point_attr(root, "radius", 0.1 * grown(growth, 0))
 s_point[0] = root
 s_len[0] = trunk_length
 s_radius[0] = 0.1
-s_id[0] = seed * 7919
+s_id[0] = seed * 7919 % 1000003
 top = 1
-next_id = 1
 
 while top > 0:
     top -= 1
@@ -65,16 +64,19 @@ while top > 0:
         prev = pt
     if depth + 1 >= depth_max or g < 1:
         set_point_attr(prev, "leaf", True)
+        set_point_attr(prev, "leaf_id", bid)   # leaves.py turns each leaf by it
         continue
     for c in range(children):
         if top >= 512:
             break
+        # A child's number comes from its parent's, never from how many branches came before:
+        # a branch keeps its shape when new ones start growing elsewhere in the tree.
+        cid = (bid * 61 + c + 1) % 1000003
         s_point[top] = prev
         s_pos[top] = pos
-        s_rot[top] = child_rotation(q, c, spread, next_id)
-        s_len[top] = full * ratio * (0.8 + 0.4 * random(next_id, 5))
+        s_rot[top] = child_rotation(q, c, spread, cid)
+        s_len[top] = full * ratio * (0.8 + 0.4 * random(cid, 5))
         s_radius[top] = radius * ratio * 0.9
         s_depth[top] = depth + 1
-        s_id[top] = next_id
-        next_id += 1
+        s_id[top] = cid
         top += 1
