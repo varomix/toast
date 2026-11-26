@@ -1928,6 +1928,51 @@ POINTS_SAMPLE_CODE = """
 @miss = sample_grid(0, "nope", @position)
 """
 TOPOLOGY_CODE = "@density = @position.x * 2.0 + @position.z\n"
+FOLLOW_CODE = """
+@nb = grid_voxel(0, "density", @voxel + vec3(1, 0, 0))
+@vs: vec3 = @voxel_size
+if @position.x > 1.0:
+    deactivate_voxel(@voxel)
+if @voxel.y == 0 and @voxel.x == -4:
+    deactivate_voxel(@voxel)
+if @voxel.y == 1 and @voxel.x == -4:
+    activate_voxel(@voxel - vec3(0, 1, 0))
+if @voxel.x == -4 and @voxel.y == 3 and @voxel.z == 6:
+    activate_voxel(@voxel + vec3(-3, 0, -2), 1)
+"""
+VDB_CODE = "@density = @density * 2.0 + grid_voxel(0, 'density', @voxel + vec3(0, 0, 1))\n"
+VDB_MATRIX = [[0.25, 0, 0, 0], [0, 0.25, 0, 0], [0, 0, 0.25, 0], [0.5, 0, 1.0, 1]]
+
+
+def vdb_grids():
+    """The grids of the test VDB file, as harness Grids: "density", 4 x 3 x 2 voxels from
+    (-4, 0, 6) with values 1..24 plus an active tile (8..15)^3 of 2.5, and "vel", 0.5 on the
+    4 x 3 x 2 voxels."""
+    from toast.harness import Grid
+
+    t = np.array(VDB_MATRIX, np.float32)
+    box = [(-4 + x, y, 6 + z) for x in range(4) for y in range(3) for z in range(2)]
+    tile = [(x, y, z) for x in range(8, 16) for y in range(8) for z in range(8, 16)]
+    density = np.concatenate([np.arange(1, 25, dtype=np.float32), np.full(len(tile), 2.5, np.float32)])
+    return {"density": Grid(np.array(box + tile, np.int32), density, t, 0.0),
+            "vel": Grid(np.array(box, np.int32), np.full((24, 3), 0.5, np.float32), t,
+                        np.zeros(3, np.float32))}  # fmt: skip
+
+
+def write_vdb(path):
+    import openvdb
+
+    density = openvdb.FloatGrid()
+    density.transform = openvdb.createLinearTransform(VDB_MATRIX)
+    density.copyFromArray(np.arange(1, 25, dtype=np.float32).reshape(4, 3, 2), ijk=(-4, 0, 6),
+                          tolerance=0)  # fmt: skip
+    density.fill(min=(8, 0, 8), max=(15, 7, 15), value=2.5, active=True)
+    density.name = "density"
+    vel = openvdb.Vec3SGrid()
+    vel.transform = density.transform
+    vel.copyFromArray(np.full((4, 3, 2, 3), 0.5, np.float32), ijk=(-4, 0, 6), tolerance=(0, 0, 0))
+    vel.name = "vel"
+    openvdb.write(str(path), grids=[density, vel])
 
 
 def _voxel_grid(coords, values, size=0.25, offset=(0.0, 0.0, 0.0), background=0.0):
@@ -2024,14 +2069,54 @@ class TestVoxels(unittest.TestCase):
         for name in a.grids:
             np.testing.assert_array_equal(a.grids[name].values, b.grids[name].values)
 
+    def table(self, grid):
+        return {tuple(c): v for c, v in zip(grid.coords.tolist(), np.asarray(grid.values).tolist())}
+
+    def test_voxel_index_and_size(self):
+        g = _voxel_grid([(1, 2, 3), (-1, 0, 0)], np.zeros(2, np.float32), size=0.5)
+        out = run(toast.build("@i: vec3 = @voxel\n@s: vec3 = @voxel_size\n", "voxels"),
+                  [Geometry(grids={"a": g})])  # fmt: skip
+        self.assertEqual(self.table(out.grids["i"]), {(1, 2, 3): [1.0, 2.0, 3.0], (-1, 0, 0): [-1.0, 0.0, 0.0]})
+        self.assertEqual(out.grids["s"].values.tolist(), [[0.5] * 3] * 2)
+        self.assertEqual(sorted(out.grids), ["a", "i", "s"])
+
+    def test_grid_voxel_reads_one_voxel(self):
+        code = ("@nx = grid_voxel(0, 'density', @voxel + vec3(1, 0, 0))\n"
+                "@c = sample_grid(0, 'density', @position)\n@d = @density\n")  # fmt: skip
+        out = run(toast.build(code, "voxels"), [Geometry(grids={"density": self.density()})])
+        d = self.table(out.grids["d"])
+        for (x, y, z), v in self.table(out.grids["nx"]).items():
+            self.assertEqual(v, d.get((x + 1, y, z), 0.0))
+        self.assertEqual(self.table(out.grids["c"]), d)
+
+    def test_activate_and_deactivate_voxels(self):
+        coords = [(0, 0, 0), (1, 0, 0), (2, 0, 0)]
+        geo = Geometry(grids={"density": _voxel_grid(coords, np.array([1.0, 2.0, 3.0], np.float32)),
+                              "other": _voxel_grid(coords, np.ones(3, bool), background=False)})
+        code = ("if @voxel.x == 0:\n    activate_voxel(@voxel + vec3(0, 0, 5), 1)\n"
+                "if @voxel.x >= 1:\n    deactivate_voxel(@voxel)\n"
+                "if @voxel.x == 2:\n    activate_voxel(@voxel)\n"
+                "@density = @density + 10.0\n")  # fmt: skip
+        out = run(toast.build(code, "voxels"), [geo])
+        cube = {(i, j, 5 + k) for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)}
+        d = self.table(out.grids["density"])
+        self.assertEqual(set(d), {(0, 0, 0), (2, 0, 0)} | cube)
+        self.assertEqual((d[(0, 0, 0)], d[(2, 0, 0)]), (11.0, 13.0))  # Activated: kept its value.
+        self.assertEqual({d[c] for c in cube}, {0.0})  # New voxels hold the background.
+        self.assertEqual(set(self.table(out.grids["other"])), set(d))  # Every grid follows.
+
     def test_voxels_mode_errors(self):
         for code, msg in (("add_point(@position)\n", "add_point() doesn't work with Run Over Voxels"),
                           ("@position = vec3(0)\n", "@position is the voxel's center"),
                           ("output('x', 1.0)\n", "output() doesn't work with Run Over Voxels"),
-                          ("face_attr(0, 'a', 0)\n", "input 0 has no faces")):  # fmt: skip
+                          ("face_attr(0, 'a', 0)\n", "input 0 has no faces"),
+                          ("@voxel = vec3(0)\n", "@voxel is read-only")):  # fmt: skip
             with self.assertRaises(toast.ToastError) as cm:
                 toast.compile_source(code, "voxels")
             self.assertIn(msg, str(cm.exception))
+        with self.assertRaises(toast.ToastError) as cm:
+            toast.compile_source("activate_voxel(vec3(0))\n", "points")
+        self.assertIn("activate_voxel() doesn't work with Run Over Points", str(cm.exception))
 
 
 @unittest.skipUnless(_blender_has_toast_node(), "Blender with GeometryNodeToast not found")
@@ -2046,7 +2131,11 @@ class TestBlenderVolumes(unittest.TestCase):
          "grids": [["density", "FLOAT"], ["vel", "VECTOR"]]},
         {"name": "topology", "input": "topology", "run_over": "VOXELS", "code": TOPOLOGY_CODE,
          "grids": [["topo", "BOOLEAN"], ["density", "FLOAT"]]},
+        {"name": "follow", "run_over": "VOXELS", "code": FOLLOW_CODE,
+         "grids": [["density", "FLOAT"], ["vel", "VECTOR"], ["nb", "FLOAT"], ["vs", "VECTOR"]]},
     ]  # fmt: skip
+    VDB_CASE = {"name": "vdb", "run_over": "VOXELS", "code": VDB_CODE,
+                "grids": [["density", "FLOAT"], ["vel", "VECTOR"]]}  # fmt: skip
 
     @classmethod
     def setUpClass(cls):
@@ -2054,7 +2143,13 @@ class TestBlenderVolumes(unittest.TestCase):
         script = Path(__file__).resolve().parent / "blender_volume_check.py"
         with tempfile.TemporaryDirectory() as d:
             cases = Path(d) / "cases.json"
-            cases.write_text(json.dumps(cls.CASES))
+            all_cases = list(cls.CASES)
+            try:
+                write_vdb(Path(d) / "test.vdb")
+                all_cases.append(dict(cls.VDB_CASE, input="vdb:" + str(Path(d) / "test.vdb")))
+            except ImportError:
+                pass  # No openvdb module: the VDB test skips.
+            cases.write_text(json.dumps(all_cases))
             proc = subprocess.run(
                 [BLENDER, "-b", "--factory-startup", "--enable-autoexec", "--python-exit-code",
                  "1", "--python", str(script), "--", str(repo), str(cases)],
@@ -2128,6 +2223,25 @@ class TestBlenderVolumes(unittest.TestCase):
     def test_new_grids_on_a_topology(self):
         after = self.check_voxels(self.CASES[2])
         self.assertEqual(len(after["density"].coords), 12 * 4 * 4)
+
+    def test_voxel_index_neighbors_and_activation(self):
+        after = self.check_voxels(self.CASES[3])
+        voxels = set(map(tuple, after["density"].coords.tolist()))
+        self.assertIn((-4, 0, 6), voxels)  # Deactivated and activated again: stays.
+        self.assertIn((-8, 2, 3), voxels)  # From the activated cube around (-7, 3, 4).
+        self.assertNotIn((7, 0, 6), voxels)  # Deactivated.
+        self.assertEqual(set(map(tuple, after["vel"].coords.tolist())), voxels)
+
+    def test_volume_from_a_vdb_file(self):
+        if "vdb" not in self.r:
+            self.skipTest("no openvdb module to write the test file")
+        d = self.r["vdb"]["out"]
+        self.assertEqual((d["error"], d["warnings"]), ("", []))
+        after = self.grids(self.VDB_CASE, "out")
+        out = run(toast.build(VDB_CODE, "voxels"), [Geometry(grids=vdb_grids())])
+        self.assertEqual(len(after["density"].coords), 24 + 512)  # The tile, split into voxels.
+        for name in ("density", "vel"):
+            self.assert_same_grid(after[name], out.grids[name])
 
     def test_sample_grid_from_points(self):
         case = self.CASES[1]

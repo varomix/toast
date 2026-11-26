@@ -11,6 +11,7 @@ index x -4..7 and z 6..9, so it spans two leaves along x and z), then Field to G
 "density" (float) and "vel" (vector) from the voxel positions, stored with Store Named Grid. With
 "input": "topology", the volume has only the topology, as a bool grid "topo". With "points": n,
 a point cloud of n points is joined to the volume (for Run Over Points with sample_grid()).
+With "input": "vdb:<path>", the input is a Volume object reading that VDB file.
 
 Each case is evaluated three times: with the Toast node muted and with it on, the grids named in
 "grids" dumped through Grid to Points (voxel index, value bits, transform, background); and with
@@ -151,9 +152,13 @@ def dump_grids(tree, volume, grids):
 
 def build(case, phase):
     tree = bpy.data.node_groups.new("t", "GeometryNodeTree")
+    tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
     tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
     out = tree.nodes.new("NodeGroupOutput")
-    source = make_volume(tree, case.get("input", "volume"))
+    if case.get("input", "").startswith("vdb:"):
+        source = tree.nodes.new("NodeGroupInput").outputs[0]
+    else:
+        source = make_volume(tree, case.get("input", "volume"))
     if case.get("points"):
         source = add_points(tree, source, case["points"])
     toast_node = tree.nodes.new("GeometryNodeToast")
@@ -175,7 +180,13 @@ def build(case, phase):
 
 
 def evaluate(case, phase):
-    obj = bpy.data.objects.new("v", bpy.data.meshes.new("v"))
+    kind = case.get("input", "")
+    if kind.startswith("vdb:"):
+        data = bpy.data.volumes.new("v")
+        data.filepath = kind[4:]
+    else:
+        data = bpy.data.meshes.new("v")
+    obj = bpy.data.objects.new("v", data)
     bpy.context.scene.collection.objects.link(obj)
     tree, toast_node = build(case, phase)
     mod = obj.modifiers.new("t", "NODES")

@@ -66,6 +66,10 @@ INPUT0_DOMAINS = {
 DOMAIN_WORD = {"point": "points", "face": "faces", "edge": "edges", "corner": "face corners",
                "curve": "curves", "instance": "instances"}  # fmt: skip
 
+# Run Over Voxels: @voxel (index, as a vec3 of whole numbers) and @voxel_size (along each index
+# axis, in world units), bound as these attribute names.
+VOXEL_ATTRS = {"voxel": "__voxel", "voxel_size": "__voxel_size"}
+
 MAIN = "__main__"
 LIB_PACKAGE = "toast_lib"
 MAX_INPUTS = 4
@@ -116,7 +120,7 @@ BUILTINS = set(UNARY_MATH) | {
     "set_face_attr", "ray_cast", "closest_point", "sample_nearest_surface", "voronoi",
     "curl_noise", "len", "curve_attr", "instance_attr", "curve_count", "curve_points",
     "remove_curve", "add_curve", "extend_curve", "random_surface_point", "sample_grid",
-    "grid_gradient", "remove_instance", "quat", "mat4", "quat_axis_angle", "quat_euler",
+    "grid_gradient", "grid_voxel", "activate_voxel", "deactivate_voxel", "remove_instance", "quat", "mat4", "quat_axis_angle", "quat_euler",
     "quat_between", "rotate", "slerp", "inverse", "to_euler", "transpose", "transform_point",
     "transform_direction", "mat4_translation", "mat4_rotation", "mat4_scale", "mat4_compose",
     "output",
@@ -391,6 +395,12 @@ class Compiler:
                 node,
             )
         name = raw
+        if self.run_over == "voxels" and name in VOXEL_ATTRS:
+            # The voxel's index and size: bound as copies the node and the harness make.
+            if write:
+                self.err(f"@{name} is read-only", node)
+            b = self.bind(0, VOXEL_ATTRS[name], VEC3, snapshot=False, read=True, domain=domain)
+            return E(f"{b.var}[i]", VEC3)
         if write and self.run_over == "voxels" and name == "position":
             self.err("@position is the voxel's center and can't be written; to move values, "
                      "read them from elsewhere with sample_grid()", node)  # fmt: skip
@@ -1478,7 +1488,8 @@ class Compiler:
         return E(f"toast::random_surface_point(c, {inp}, {id_}, {seed})", HIT)
 
     def _grid_slot(self, fname, node, expect):
-        """(slot, type, position code) of the grid in `fname(input, "name", position)`."""
+        """(slot, type, position code) of the grid in `fname(input, "name", position)` (an
+        index for grid_voxel())."""
         args = self._args(node, fname, 3)
         inp = self._input_arg(args[0], fname)
         name = self._const_str(args[1], f"{fname}(): the grid name")
@@ -1495,7 +1506,8 @@ class Compiler:
         slot = self.grids.setdefault((inp, name, t.name), len(self.grids))
         self.host_uses.add("grid_sample")
         self.inputs_used.add(inp)
-        pos = self.coerce(self.expr(args[2], VEC3), VEC3, args[2], f"{fname}() position")
+        what = "index" if fname == "grid_voxel" else "position"
+        pos = self.coerce(self.expr(args[2], VEC3), VEC3, args[2], f"{fname}() {what}")
         return slot, t, pos
 
     def call_sample_grid(self, node, expect):
@@ -1505,6 +1517,32 @@ class Compiler:
         if t == VEC3:
             return E(f"toast::sample_grid3(c, {slot}, {pos})", VEC3)
         return E(f"toast::sample_grid(c, {slot}, {pos})", FLOAT)
+
+    def call_grid_voxel(self, node, expect):
+        """A grid's value at a voxel index (rounded), without interpolation: with Run Over
+        Voxels, grid_voxel(0, "name", @voxel + vec3(1, 0, 0)) is the next voxel along x."""
+        slot, t, idx = self._grid_slot("grid_voxel", node, expect)
+        return E(f"toast::grid_voxel{'3' if t == VEC3 else ''}(c, {slot}, {idx})", t)
+
+    def _voxel_cmd(self, fname, node, n_max):
+        self._check_mode(fname, ("voxels",), node)
+        args = self._args(node, fname, 1, n_max)
+        idx = self.coerce(self.expr(args[0], VEC3), VEC3, args[0], f"{fname}() index")
+        self.host_uses.add("voxel_cmd")
+        return args, idx
+
+    def call_activate_voxel(self, node, expect):
+        """activate_voxel(index, radius=0): after the run, the voxels within `radius` (a cube)
+        of the index become active in every grid of the volume."""
+        args, idx = self._voxel_cmd("activate_voxel", node, 2)
+        r = self.coerce(self.expr(args[1]), INT, args[1], "activate_voxel() radius") if len(args) == 2 else "0"
+        return E(f"toast::activate_voxel(c, {idx}, {r})", NONE)
+
+    def call_deactivate_voxel(self, node, expect):
+        """deactivate_voxel(index): after the run, the voxel becomes inactive (and empty) in
+        every grid of the volume, unless something activates it in the same run."""
+        _args, idx = self._voxel_cmd("deactivate_voxel", node, 1)
+        return E(f"toast::deactivate_voxel(c, {idx})", NONE)
 
     def call_grid_gradient(self, node, expect):
         """The gradient of a float grid at a position (central differences, one voxel apart)."""

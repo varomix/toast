@@ -19,19 +19,17 @@ its tip (kernel ABI 6). The trails example uses both. Still to do:
 - Choosing the type of new curves (Bezier, NURBS) and writing curve attributes of new curves
   (`set_curve_attr()`); today new curves are poly with default curve attributes.
 
-### Volumes (done in 0.17)
+### Volumes (done in 0.17, 0.18)
 
 Run Over Voxels runs once per active voxel, with grids as `@` attributes (float, int, bool,
-vec3); `sample_grid()` and `grid_gradient()` read grids from any mode (kernel ABI 8). Boxes of
-voxels come from Cube Grid Topology. The smoke example uses it all. Still to do:
+vec3), `@voxel` and `@voxel_size`; `sample_grid()`, `grid_voxel()` and `grid_gradient()` read
+grids from any mode; `activate_voxel()`/`deactivate_voxel()` change which voxels exist (kernel
+ABI 9, 0.18). Volumes from VDB files work (tested with a file that has a tile). The smoke example
+uses it all. Still to do:
 
-- The voxel's size and index in code (`@voxel_size`, `@voxel`), so code doesn't need them as
-  parameters.
-- Faster neighbor reads: a voxel reading its six neighbors makes six host calls; a
-  `voxel_attr(0, "name", di, dj, dk)` reading by index offset would skip the transform.
-- Changing which voxels are active from code (activate around smoke, deactivate empty space),
-  so a simulation's grid follows its smoke instead of filling a box.
-- Not tried yet on volumes loaded from VDB files (only on grids made by Blender's nodes).
+- Neighbor reads without a call into the node: the voxels' point cloud could carry the index of
+  each voxel's six neighbors, so `grid_voxel()` on the run's own grids reads an array.
+- Activating voxels from other modes (points that leave smoke in a grid).
 
 ### Grease Pencil (done in 0.15)
 

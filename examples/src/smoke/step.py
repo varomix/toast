@@ -17,25 +17,27 @@ v = v + vec3(0, 0, param("source_speed", 2.0)) * puff * dt * 8.0
 
 # Vorticity confinement: push along the swirls, toward where the smoke spins faster, so the
 # small eddies that advection blurs keep turning (vorticity.py measured the spin).
-h = param("voxel_size", 0.03125)
 @vorticity: vec3
 w = @vorticity
-p = @position
-toward = vec3(length(sample_grid(0, "vorticity", p + vec3(h, 0, 0))) - length(sample_grid(0, "vorticity", p - vec3(h, 0, 0))),
-              length(sample_grid(0, "vorticity", p + vec3(0, h, 0))) - length(sample_grid(0, "vorticity", p - vec3(0, h, 0))),
-              length(sample_grid(0, "vorticity", p + vec3(0, 0, h))) - length(sample_grid(0, "vorticity", p - vec3(0, 0, h))))
+i = @voxel
+toward = vec3(length(grid_voxel(0, "vorticity", i + vec3(1, 0, 0))) - length(grid_voxel(0, "vorticity", i - vec3(1, 0, 0))),
+              length(grid_voxel(0, "vorticity", i + vec3(0, 1, 0))) - length(grid_voxel(0, "vorticity", i - vec3(0, 1, 0))),
+              length(grid_voxel(0, "vorticity", i + vec3(0, 0, 1))) - length(grid_voxel(0, "vorticity", i - vec3(0, 0, 1))))
 toward = toward / (length(toward) + 1e-6)
-v = v + cross(toward, w) * param("confinement", 4.0) * h * dt
+v = v + cross(toward, w) * param("confinement", 4.0) * @voxel_size.x * dt
 
 # Buoyancy, swirl (curl noise, changing over time) and a little drag.
 v = v + vec3(0, 0, param("buoyancy", 3.0) * d * dt)
 swirl = curl_noise(@position * param("swirl_scale", 1.2) + vec3(0, 0, -@time * 0.6))
 v = v + swirl * param("swirl", 4.0) * dt * d
 v = v * (1.0 - param("drag", 0.2) * dt)
-# Smoke thins out over time, and near the top and sides of the box, so it never shows the box.
-d = d * (1.0 - param("fade", 0.3) * dt)
-wall = param("walls", 0.875)
-side = max(abs(@position.x), abs(@position.y))
-d = d * smoothstep(wall, wall - 0.3, side)
-@density = d * smoothstep(param("ceiling", 3.5), param("ceiling", 3.5) - 1.4, @position.z)
+d = d * (1.0 - param("fade", 0.4) * dt)
+@density = d
 @velocity = v
+
+# The grid follows the smoke: voxels with smoke keep `margin` voxels around them active (room to
+# flow into next step), the others go. Up to a ceiling, so it can't grow forever.
+if d > param("keep", 0.02) and @position.z < param("ceiling", 6.0):
+    activate_voxel(@voxel, param("margin", 3))
+else:
+    deactivate_voxel(@voxel)

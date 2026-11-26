@@ -180,6 +180,12 @@ Euclidean, detail 0, randomness `r`; distance, color and position outputs). Scal
   of the voxels active in any grid the code uses (all grids if none exist), tiles split, ordered
   by leaf origin then offset; written attributes go back into grids. `_run_voxels` and
   `_GridSampler` in the harness are the reference.
+- ABI 9: `grid_sample` mode 2 reads the voxel at an index (each coordinate `floor(x + 0.5)`);
+  adds `voxel_cmd(op, ijk, radius)`: activate a cube of `radius` (0..16) / deactivate a voxel in
+  every grid of the volume with the run's transform, after the written grids are stored;
+  deactivations first and only of voxels nothing activates (sets: call order doesn't matter);
+  `_apply_voxel_cmds` in the harness is the reference. `@voxel`/`@voxel_size` are bound as the
+  attributes `__voxel` and `__voxel_size` of the voxels' point cloud.
 
 ## Measurements (2026-11-24, 32 threads, g++ 14, fork 5.3)
 

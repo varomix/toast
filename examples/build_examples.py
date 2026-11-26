@@ -1057,11 +1057,11 @@ def smoke():
     new_file(200)
     obj = mesh_object("Smoke")
     t = Tree(obj, "Smoke")
-    # A box of 56 x 56 x 112 voxels of 1/32: voxel centers land exactly on the grid, so a voxel
-    # reading its neighbors reads them exactly.
+    # The voxels to start with: a box of 32^3 voxels of 1/32 around the source. From there the
+    # grid follows the smoke (step.py activates voxels around smoke and drops empty ones).
     topo = t.node("GeometryNodeCubeGridTopology", (-200, 0), **{
-        "Bounds Min": (-0.875, -0.875, 0.0), "Bounds Max": (0.875, 0.875, 3.5),
-        "Resolution X": 56, "Resolution Y": 56, "Resolution Z": 112})  # fmt: skip
+        "Bounds Min": (-0.5, -0.5, 0.0), "Bounds Max": (0.5, 0.5, 1.0),
+        "Resolution X": 32, "Resolution Y": 32, "Resolution Z": 32})  # fmt: skip
     store = t.node("GeometryNodeStoreNamedGrid", (0, 0), Name="box")
     store.data_type = "BOOLEAN"
     t.link(topo.outputs[0], store.inputs["Grid"])
@@ -1093,7 +1093,7 @@ def smoke():
 
     bpy.ops.mesh.primitive_plane_add(size=30)
     bpy.context.active_object.data.materials.append(material("Floor", color=(0.05, 0.05, 0.06), roughness=0.6))
-    camera((0, -9.0, 1.5), (0, 0, 1.8), lens=40)
+    camera((0, -13.0, 2.0), (0, 0, 2.6), lens=40)
     # Volumes look best path traced: Cycles for this one.
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
@@ -1105,23 +1105,27 @@ def smoke():
     rim = light("AREA", (1.5, 3.5, 3.0), 400, size=3, color=(0.5, 0.65, 1.0))
     rim.rotation_euler = (mathutils.Vector((0, 0, 1.8)) - rim.location).to_track_quat("-Z", "Y").to_euler()
     note([
-        "Smoke: a plume rising through a box of voxels. Press Play.",
+        "Smoke: a plume rising, in a grid of voxels that follows it. Press Play.",
         "",
-        "Cube Grid Topology makes the box (56 x 56 x 112 voxels); every Toast node here runs over",
-        "its voxels, and each @ attribute is a grid (density, velocity, pressure, divergence).",
+        "Cube Grid Topology makes a first box of voxels around the source; every Toast node here",
+        "runs over the volume's voxels, and each @ attribute is a grid (density, velocity,",
+        "pressure, divergence, vorticity). Neighbors are read by index: grid_voxel(0, name,",
+        "@voxel + vec3(1, 0, 0)).",
         "",
         "setup.py       (Voxels)  empty grids",
         "In the Simulation Zone:",
         "vorticity.py   (Voxels)  how fast the smoke spins at each voxel",
         "step.py        (Voxels)  advection: each voxel reads density and velocity where its",
         "                         smoke comes from, with sample_grid(); a source, buoyancy,",
-        "                         swirl, and a push that keeps small eddies turning",
+        "                         swirl, and a push that keeps small eddies turning; then the",
+        "                         grid follows the smoke: activate_voxel() around smoke (3",
+        "                         voxels of margin), deactivate_voxel() where it's gone",
         "divergence.py  (Voxels)  how much flows out of each voxel",
         "pressure.py    (Voxels)  one Jacobi step; the Repeat Zone runs it 24 times",
         "project.py     (Voxels)  velocity minus the pressure gradient (grid_gradient)",
         "",
-        "Try: swirl, buoyancy, source_radius; more pressure iterations; a bigger box",
-        "(keep voxel_size in divergence.py and pressure.py equal to the box's voxel size).",
+        "Try: swirl, buoyancy, source_radius, margin; more pressure iterations; a finer",
+        "voxel size (Cube Grid Topology's resolution).",
     ])
     save("14_smoke")
 

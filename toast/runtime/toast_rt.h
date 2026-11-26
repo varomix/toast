@@ -31,7 +31,7 @@ typedef __SIZE_TYPE__ size_t;
 #  define offsetof(type, member) __builtin_offsetof(type, member)
 #endif
 
-#define TOAST_ABI_VERSION 8
+#define TOAST_ABI_VERSION 9
 
 #if defined(_WIN32)
 #  define TOAST_EXPORT extern "C" __declspec(dllexport)
@@ -122,7 +122,13 @@ typedef struct ToastAttr {
  *   just `a` when t is 0 (inactive voxels give the value the grid holds there, usually its
  *   background). mode 0 writes the value (1 float, 3 for a vec3 grid), mode 1
  *   the gradient of a float grid by central differences one voxel apart along each world axis
- *   (3 floats). Returns 0 and writes zeros when the grid doesn't exist or has another type.
+ *   (3 floats), mode 2 the value of the voxel at index pos3 rounded (floor(x + 0.5)), no
+ *   interpolation. Returns 0 and writes zeros when the grid doesn't exist or has another type.
+ * - voxel_cmd (Run Over Voxels): op 1 activates the voxels within `radius` (a cube, clamped to
+ *   0..16) of index ijk, op 0 deactivates voxel ijk, in every grid of the volume with the run's
+ *   transform, after the run and after the written grids are stored. Deactivations apply first
+ *   and only to voxels nothing activates; deactivated voxels get the grid's background. Sets, so
+ *   the order of calls doesn't matter.
  * Commands are merged sorted by (src, emission order), so results don't depend on threads. */
 typedef struct ToastHost {
   void *self;
@@ -167,6 +173,8 @@ typedef struct ToastHost {
       void *self, int32_t input, float u, float v, float w, ToastHit *out);
   /* ABI 8. */
   int32_t (*grid_sample)(void *self, int32_t grid, int32_t mode, const float *pos3, float *out);
+  /* ABI 9. */
+  void (*voxel_cmd)(void *self, int32_t op, const int32_t *ijk, int32_t radius);
 } ToastHost;
 
 typedef struct ToastCtx {
@@ -1307,6 +1315,50 @@ inline float3 sample_grid3(const ToastCtx *c, int32_t grid, float3 pos)
   float out[3] = {0.0f, 0.0f, 0.0f};
   c->host->grid_sample(c->host->self, grid, 0, &pos.x, out);
   return float3(out[0], out[1], out[2]);
+}
+
+inline float grid_voxel(const ToastCtx *c, int32_t grid, float3 index)
+{
+  float out[3] = {0.0f, 0.0f, 0.0f};
+  c->host->grid_sample(c->host->self, grid, 2, &index.x, out);
+  return out[0];
+}
+
+inline float3 grid_voxel3(const ToastCtx *c, int32_t grid, float3 index)
+{
+  float out[3] = {0.0f, 0.0f, 0.0f};
+  c->host->grid_sample(c->host->self, grid, 2, &index.x, out);
+  return float3(out[0], out[1], out[2]);
+}
+
+/* A voxel index from a vec3: each coordinate rounded, false when one isn't a finite number
+ * below 1e9. */
+inline bool voxel_index(float3 v, int32_t *ijk)
+{
+  const float x[3] = {v.x, v.y, v.z};
+  for (int k = 0; k < 3; k++) {
+    if (!(__builtin_fabsf(x[k]) < 1e9f)) {
+      return false;
+    }
+    ijk[k] = int32_t(__builtin_floorf(x[k] + 0.5f));
+  }
+  return true;
+}
+
+inline void activate_voxel(const ToastCtx *c, float3 index, int32_t radius)
+{
+  int32_t ijk[3];
+  if (voxel_index(index, ijk)) {
+    c->host->voxel_cmd(c->host->self, 1, ijk, radius);
+  }
+}
+
+inline void deactivate_voxel(const ToastCtx *c, float3 index)
+{
+  int32_t ijk[3];
+  if (voxel_index(index, ijk)) {
+    c->host->voxel_cmd(c->host->self, 0, ijk, 0);
+  }
 }
 
 inline float3 grid_gradient(const ToastCtx *c, int32_t grid, float3 pos)

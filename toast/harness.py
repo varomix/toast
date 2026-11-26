@@ -253,6 +253,9 @@ GRID_SAMPLE_FN = ctypes.CFUNCTYPE(
     ctypes.c_int32, ctypes.c_void_p, ctypes.c_int32, ctypes.c_int32, ctypes.POINTER(ctypes.c_float),
     ctypes.POINTER(ctypes.c_float),
 )
+VOXEL_CMD_FN = ctypes.CFUNCTYPE(
+    None, ctypes.c_void_p, ctypes.c_int32, ctypes.POINTER(ctypes.c_int32), ctypes.c_int32
+)
 CLOSEST_FN = ctypes.CFUNCTYPE(
     ctypes.c_int32, ctypes.c_void_p, ctypes.c_int32, ctypes.POINTER(ctypes.c_float),
     ctypes.c_float, ctypes.POINTER(ToastHit),
@@ -330,6 +333,7 @@ class ToastHost(ctypes.Structure):
         ("cmd_extend_curve", EXTEND_CURVE_FN),
         ("surface_point", SURFACE_POINT_FN),
         ("grid_sample", GRID_SAMPLE_FN),
+        ("voxel_cmd", VOXEL_CMD_FN),
     ]
 
 
@@ -402,8 +406,10 @@ def pack_params(signature, values=None):
 class _Host:
     """Host services and command buffers for one kernel run."""
 
-    def __init__(self, inputs, attr_sizes=(), grids=(), grid_inputs=None):
+    def __init__(self, inputs, attr_sizes=(), grids=(), grid_inputs=None, voxel_cmds=None):
         self.inputs = inputs
+        # activate_voxel()/deactivate_voxel(): {"activate": [(i, j, k, radius)], "deactivate": set}.
+        self.voxel_cmds = voxel_cmds if voxel_cmds is not None else {"activate": [], "deactivate": set()}
         # sample_grid() slots: [(Grid or None, wanted type)], from the inputs as they were.
         self.grid_slots = []
         for g in grids:
@@ -448,11 +454,13 @@ class _Host:
             EXTEND_CURVE_FN(self._guard(self._extend_curve, 0)),
             SURFACE_POINT_FN(self._guard(self._surface_point, 0)),
             GRID_SAMPLE_FN(self._guard(self._grid_sample, 0)),
+            VOXEL_CMD_FN(self._guard(self._voxel_cmd, None)),
         )  # fmt: skip
         self._keep_fns = (self.struct.ray_cast, self.struct.closest_point, self.struct.ncurves,
                           self.struct.curve_points, self.struct.cmd_remove_curve,
                           self.struct.cmd_add_curve, self.struct.cmd_extend_curve,
-                          self.struct.surface_point, self.struct.grid_sample)  # fmt: skip
+                          self.struct.surface_point, self.struct.grid_sample,
+                          self.struct.voxel_cmd)  # fmt: skip
 
     def _guard(self, fn, default):
         def wrapped(*args):
@@ -696,11 +704,20 @@ class _Host:
             if sampler.ncomp != 1:
                 return 0
             g = sampler.gradient(p)
+        elif mode == 2:
+            g = sampler.voxel(p)
         else:
             g = sampler.sample(p)
         for k in range(len(g)):
             out[k] = float(g[k])
         return 1
+
+    def _voxel_cmd(self, _self, op, ijk, radius):
+        with self.lock:
+            if op == 1:
+                self.voxel_cmds["activate"].append((ijk[0], ijk[1], ijk[2], radius))
+            else:
+                self.voxel_cmds["deactivate"].add((ijk[0], ijk[1], ijk[2]))
 
     def _set_attr(self, _self, cmd, src, attr, elem, value):
         size = self.attr_sizes[attr]
@@ -784,6 +801,13 @@ class _GridSampler:
         c0 = along_y(k)
         return (c0 if fz == 0 else c0 + (along_y(k + 1) - c0) * fz).astype(np.float32)
 
+    def voxel(self, p):
+        """The value of the voxel at index p, each coordinate rounded."""
+        if not all(abs(x) < 1e9 for x in p):
+            return self.background.copy()
+        i, j, k = (int(np.floor(x + np.float32(0.5))) for x in p)
+        return np.array(self.value(i, j, k), dtype=np.float32)
+
     def gradient(self, p):
         g = []
         for a in range(3):
@@ -816,7 +840,8 @@ def _run_voxels(lk, inputs, params, threads, grain, selection, frame, time):
     out = inputs[0].copy()
     used = []
     for a in sig["attrs"]:
-        if a["input"] == 0 and not a.get("output") and a["name"] != "position":
+        if (a["input"] == 0 and not a.get("output") and a["name"] != "position"
+                and not a["name"].startswith("__")):  # fmt: skip
             if a["name"] not in used:
                 used.append(a["name"])
     topo = [out.grids[n] for n in used if n in out.grids] or list(out.grids.values())
@@ -839,6 +864,12 @@ def _run_voxels(lk, inputs, params, threads, grain, selection, frame, time):
     for r in range(3):
         pos[:, r] = t[0, r] * f[:, 0] + t[1, r] * f[:, 1] + t[2, r] * f[:, 2] + t[3, r]
     temp = Geometry(points={"position": pos})
+    names = {a["name"] for a in sig["attrs"]}
+    if "__voxel" in names:
+        temp.points["__voxel"] = f.copy()
+    if "__voxel_size" in names:
+        step = [np.sqrt(t[a, 0] * t[a, 0] + t[a, 1] * t[a, 1] + t[a, 2] * t[a, 2]) for a in range(3)]
+        temp.points["__voxel_size"] = np.tile(np.array(step, np.float32), (n, 1))
     types = {a["name"]: a["type"] for a in sig["attrs"] if a["input"] == 0}
     for name in used:
         g = out.grids.get(name)
@@ -857,11 +888,15 @@ def _run_voxels(lk, inputs, params, threads, grain, selection, frame, time):
             if idx is not None:
                 arr[k] = vals[idx]
         temp.points[name] = arr
+    cmds = {"activate": [], "deactivate": set()}
     result = _run(lk, [temp] + list(inputs[1:]), params, threads, grain, selection, frame, time,
-                  "points", grid_inputs=inputs)  # fmt: skip
+                  "points", grid_inputs=inputs, voxel_cmds=cmds)  # fmt: skip
     for a in sig["attrs"]:
         name = a["name"]
-        if a["input"] != 0 or "w" not in a["access"] or a.get("output") or name == "position":
+        if (a["input"] != 0 or "w" not in a["access"] or a.get("output") or name == "position"
+                or name.startswith("__")):  # fmt: skip
+            continue
+        if a["type"] not in GRID_ATTR_TYPES:
             continue
         vals = result.points[name]
         old = out.grids.get(name)
@@ -877,7 +912,38 @@ def _run_voxels(lk, inputs, params, threads, grain, selection, frame, time):
         else:
             zero = np.zeros(3, np.float32) if vals.ndim == 2 else vals.dtype.type(0)
             out.grids[name] = Grid(coords.copy(), np.array(vals, copy=True), ref.copy(), zero)
+    _apply_voxel_cmds(out, cmds, same)
     return out
+
+
+def _apply_voxel_cmds(out, cmds, same):
+    """activate_voxel()/deactivate_voxel() on every grid with the run's transform: deactivations
+    first, only of voxels nothing activates (they leave the grid), then activations (new voxels
+    hold the background)."""
+    act = set()
+    for i, j, k, r in cmds["activate"]:
+        r = min(max(r, 0), 16)
+        for di in range(-r, r + 1):
+            for dj in range(-r, r + 1):
+                for dk in range(-r, r + 1):
+                    act.add((i + di, j + dj, k + dk))
+    deact = cmds["deactivate"] - act
+    if not act and not deact:
+        return
+    for name, g in list(out.grids.items()):
+        if not same(g):
+            continue
+        table = {tuple(int(x) for x in c): v for c, v in zip(np.asarray(g.coords), g.values)}
+        for c in deact:
+            table.pop(c, None)
+        bg = np.asarray(g.background, dtype=np.asarray(g.values).dtype)
+        for c in act:
+            if c not in table:
+                table[c] = bg
+        keys = sorted(table)
+        shape = (len(keys), 3) if g.is_vector else (len(keys),)
+        values = np.array([table[c] for c in keys], dtype=np.asarray(g.values).dtype).reshape(shape)
+        out.grids[name] = Grid(np.array(keys, np.int32).reshape(-1, 3), values, g.transform, g.background)
 
 
 def _new_point_set(payload, arrays, domains):
@@ -1156,7 +1222,8 @@ def run(kernel, inputs, params=None, threads=1, grain=DEFAULT_GRAIN, selection=N
                 lk.signature["run_over"])  # fmt: skip
 
 
-def _run(lk, inputs, params, threads, grain, selection, frame, time, run_over, grid_inputs=None):
+def _run(lk, inputs, params, threads, grain, selection, frame, time, run_over, grid_inputs=None,
+         voxel_cmds=None):  # fmt: skip
     sig = lk.signature
     out = inputs[0].copy()
     if sig["uses"].get("curves") and out.curves is None:
@@ -1232,7 +1299,7 @@ def _run(lk, inputs, params, threads, grain, selection, frame, time, run_over, g
     host = _Host(inputs, [a.dtype.itemsize * (a.size // max(len(a), 1)) if len(a) else
                           np.dtype(NP_TYPES[s["type"]][0]).itemsize * int(np.prod(NP_TYPES[s["type"]][1]))
                           for a, s in zip(keep_alive, sig["attrs"])],
-                 sig.get("grids", ()), grid_inputs)  # fmt: skip
+                 sig.get("grids", ()), grid_inputs, voxel_cmds)  # fmt: skip
 
     if selection is not None:
         indices = np.ascontiguousarray(np.asarray(selection, dtype=np.int64))
