@@ -388,51 +388,84 @@ def hair():
     save("03_hair")
 
 
-def growth():
-    new_file(600)
-    obj = mesh_object("Growth")
-    t = Tree(obj, "Differential growth")
+def growth_object(name, x, parallel, ribbon):
+    """One growing loop at `x`: grow.py alone (one core), or move.py + rebuild.py (all cores)."""
+    obj = mesh_object(name)
+    obj.location.x = x
+    t = Tree(obj, name)
     circle = t.node("GeometryNodeMeshCircle", (-200, 0), Vertices=60, Radius=0.25)
-    sin, sout = t.sim_zone(0, 800)
-    rin, rout = t.repeat_zone(200, 600, 4)
+    sin, sout = t.sim_zone(0, 1000)
+    rin, rout = t.repeat_zone(200, 800, 4)
     rin.label = "Steps per frame"
-    grow = t.toast("growth/grow", (380, 0))
     t.link(circle.outputs[0], sin.inputs["Geometry"])
     t.link(sin.outputs["Geometry"], rin.inputs["Geometry"])
-    t.link(rin.outputs["Geometry"], grow.inputs["Geometry"])
-    t.link(grow.outputs[0], rout.inputs["Geometry"])
+    if parallel:
+        move = t.toast("growth/move", (380, 0))
+        rebuild = t.toast("growth/rebuild", (600, 0))
+        # One split length for both nodes.
+        split = t.node("ShaderNodeValue", (380, -300), label="Split Length")
+        split.outputs[0].default_value = 0.035
+        t.link(split.outputs[0], move.inputs["split_length"])
+        t.link(split.outputs[0], rebuild.inputs["split_length"])
+        t.link(rin.outputs["Geometry"], move.inputs["Geometry"])
+        t.link(move.outputs[0], rebuild.inputs["Geometry"])
+        last = rebuild
+    else:
+        last = t.toast("growth/grow", (380, 0))
+        t.link(rin.outputs["Geometry"], last.inputs["Geometry"])
+    t.link(last.outputs[0], rout.inputs["Geometry"])
     t.link(rout.outputs["Geometry"], sout.inputs["Geometry"])
-    shade = t.toast("growth/shade", (1000, 0))
+    shade = t.toast("growth/shade", (1200, 0))
     t.link(sout.outputs["Geometry"], shade.inputs["Geometry"])
-    to_curve = t.node("GeometryNodeMeshToCurve", (1250, 0))
+    to_curve = t.node("GeometryNodeMeshToCurve", (1450, 0))
     t.link(shade.outputs[0], to_curve.inputs["Mesh"])
     # Normals pointing up, and a profile along the normal: an upright ribbon that doesn't twist.
-    normal = t.node("GeometryNodeSetCurveNormal", (1450, 0), Mode="Z Up")
+    normal = t.node("GeometryNodeSetCurveNormal", (1650, 0), Mode="Z Up")
     t.link(to_curve.outputs[0], normal.inputs["Curve"])
-    profile = t.node("GeometryNodeCurvePrimitiveLine", (1450, -250), End=(0.12, 0, 0))
-    to_mesh = t.node("GeometryNodeCurveToMesh", (1650, 0))
+    profile = t.node("GeometryNodeCurvePrimitiveLine", (1650, -250), End=(0.12, 0, 0))
+    to_mesh = t.node("GeometryNodeCurveToMesh", (1850, 0))
     t.link(normal.outputs[0], to_mesh.inputs["Curve"])
     t.link(profile.outputs[0], to_mesh.inputs["Profile Curve"])
-    setmat = t.node("GeometryNodeSetMaterial", (1850, 0))
-    setmat.inputs["Material"].default_value = material("Ribbon", attribute="Color", roughness=0.45)
+    setmat = t.node("GeometryNodeSetMaterial", (2050, 0))
+    setmat.inputs["Material"].default_value = ribbon
     t.link(to_mesh.outputs[0], setmat.inputs["Geometry"])
-    t.finish(setmat.outputs[0], 2050)
+    t.finish(setmat.outputs[0], 2250)
+    return obj
+
+
+def growth():
+    new_file(600)
+    ribbon = material("Ribbon", attribute="Color", roughness=0.45)
+    growth_object("Growth (one core)", -3.6, False, ribbon)
+    growth_object("Growth (all cores)", 3.6, True, ribbon)
 
     # A floor to cast shadows on.
-    bpy.ops.mesh.primitive_plane_add(size=20)
+    bpy.ops.mesh.primitive_plane_add(size=30)
     bpy.context.active_object.data.materials.append(material("Floor", color=(0.05, 0.05, 0.06), roughness=0.8))
-    camera((0, -5.5, 6.5), (0, 0, 0), lens=35)
+    camera((0, -9.5, 11), (0, 0, 0), lens=35)
     light("SUN", (0, 0, 10), 4.0, rotation=(35, 0, 30), size=2)
     note([
-        "Differential growth: one closed line that buckles as it grows. Press Play.",
+        "Differential growth: a closed line that buckles as it grows. Press Play.",
+        "Two objects grow the same shape, written two ways:",
         "",
-        "grow.py   (Geometry)  once per step, on one core: moves every point (attraction to",
-        "                      its neighbors, repulsion from nearby_points()), splits long",
-        "                      edges, and rebuilds the loop with add_point/add_edge/remove_point",
-        "shade.py  (Points)    a color along the loop",
+        "Growth (one core), left:",
+        "  grow.py     (Geometry)  once per step, on one core: moves every point (attraction to",
+        "                          its neighbors, repulsion from nearby_points()), splits long",
+        "                          edges, and rebuilds the loop with add_point/add_edge/remove_point",
         "",
-        "It stops splitting at max_points (12000). Raise it to see how far one sequential",
-        "kernel goes.",
+        "Growth (all cores), right: the same work split in two nodes",
+        "  move.py     (Points)    the expensive part, each point's neighbors, once per point on",
+        "                          every core; stores where the point goes (@next)",
+        "  rebuild.py  (Geometry)  the sequential part, cheap: one walk along the loop to split",
+        "                          long edges and reconnect it",
+        "",
+        "shade.py      (Points)    a color along the loop",
+        "",
+        "Compare them: node editor > Overlays > Timings shows each node's time, or hide one",
+        "object and play. Run Over Geometry runs once, so it can't use more than one core: keep",
+        "only the part that must be sequential in it.",
+        "",
+        "They stop splitting at max_points (12000). Raise it on both to see the gap grow.",
     ])
     save("04_differential_growth")
 

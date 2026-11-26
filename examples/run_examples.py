@@ -5,7 +5,7 @@
 """Play an example file forward, time each frame, and optionally render a still.
 
   blender -b --enable-autoexec examples/<name>.blend --python examples/run_examples.py -- \
-      --frames 120 [--render out.png] [--set "Node/param=value" ...] [--count N]
+      --frames 120 [--render out.png] [--set "Node/param=value" ...] [--object name]
 
 Prints one JSON line starting with RESULT: element counts and milliseconds per frame. Use it to
 see how far Toast goes on your machine (raise counts with --set).
@@ -20,6 +20,7 @@ import bpy
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 frames = 60
 render = None
+only = None  # With several Toast example objects: time this one, hide the others.
 sets = []
 k = 0
 while k < len(argv):
@@ -28,6 +29,9 @@ while k < len(argv):
         k += 2
     elif argv[k] == "--render":
         render = argv[k + 1]
+        k += 2
+    elif argv[k] == "--object":
+        only = argv[k + 1]
         k += 2
     elif argv[k] == "--set":
         sets.append(argv[k + 1])
@@ -43,21 +47,26 @@ for node in blender_addon._toast_nodes():
 errors = {n.name: n.error for n in blender_addon._toast_nodes() if n.error}
 
 for item in sets:
+    # Every node with that name or label, in every tree (examples can have several objects).
     path, value = item.split("=", 1)
-    tree_node, socket = path.rsplit("/", 1)
-    node = None
-    for tree in bpy.data.node_groups:
-        node = tree.nodes.get(tree_node) or next((n for n in tree.nodes if n.label == tree_node), None)
-        if node:
-            break
-    if node is None:
-        raise SystemExit(f"no node {tree_node}")
-    sock = node.inputs[socket]
-    sock.default_value = type(sock.default_value)(eval(value)) if not hasattr(sock.default_value, "__len__") else eval(value)
+    node_name, socket = path.rsplit("/", 1)
+    nodes = [n for tree in bpy.data.node_groups for n in tree.nodes
+             if n.name == node_name or n.label == node_name]  # fmt: skip
+    if not nodes:
+        raise SystemExit(f"no node {node_name}")
+    for node in nodes:
+        sock = node.inputs[socket]
+        current = sock.default_value
+        sock.default_value = eval(value) if hasattr(current, "__len__") else type(current)(eval(value))
 
 scene = bpy.context.scene
-obj = next(o for o in scene.objects if any(m.type == "NODES" for m in o.modifiers) and
-           o.modifiers[0].name == "Toast example")  # fmt: skip
+examples = [o for o in scene.objects if o.modifiers and o.modifiers[0].name == "Toast example"]
+if only is not None:
+    for o in examples:
+        o.hide_viewport = o.name != only
+        o.hide_render = o.name != only
+    examples = [o for o in examples if o.name == only]
+obj = examples[0]
 times = []
 for f in range(scene.frame_start, scene.frame_start + frames):
     t0 = time.perf_counter()
