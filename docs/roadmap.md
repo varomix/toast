@@ -43,21 +43,18 @@ current frame, and new strokes go into the layer. The sketch example uses it. St
   the Selection or separate nodes.
 - Reading Grease Pencil on Input 1, and Run Over Faces-like access to fills.
 
-### Particles and long trails
+### Particles and long trails (mostly done in 0.16)
 
-**Today:** particles are point clouds in a Simulation Zone, which works (flocking, fluid). The
-limits are around them: a list holds at most 4096 values, `nearby_points()` visits at most 4096
-points, lists can't grow and can't be stored on an element, and there are no trails.
+Lists hold up to 1048576 values (big ones on the heap), growable lists have `append()`, `pop()` and
+`clear()`, query loops visit up to 1048576 points, `random_surface_point()` emits from a mesh
+(kernel ABI 7), and trails are curves (`extend_curve`). The fountain and trails examples use
+them. Still to do:
 
-**Plan:**
-- Larger lists, allocated per element instead of on the stack, with a compile-time cap the
-  user can raise; `append()` on lists declared with a maximum (`trail: list[vec3, 256]`).
-- List attributes: store a fixed-size list per point (history of positions, a per-particle
-  neighbor cache), read back the next frame.
-- Trails as curves, once curves can grow (above).
-- Emission helpers for Run Over Geometry (`emit(count)` with an age and an id), and `@age` /
-  `@life` conventions with automatic removal.
-- Example to prove it: fireworks with trails, or a particle system that emits from a mesh.
+- List attributes: a fixed-size list stored per point (history, a neighbor cache), read back the
+  next frame. Today, store a few values as separate attributes, or the history as a curve.
+- `@age` / `@life` conventions with automatic removal (today: `remove_point()` in code).
+- Faster `nearby_points()` for very large counts (the node keeps the nearest in a sorted
+  array: fine up to thousands).
 
 ### Run Over Geometry in parallel
 

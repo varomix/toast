@@ -20,6 +20,9 @@ from .sugar import ATTR_OBJECT, desugar
 from .types import (
     ARRAY_ELEMENTS,
     ARRAY_MAX,
+    LITERAL_MAX,
+    growable_type,
+    is_growable,
     BOOL,
     BY_NAME,
     FLOAT,
@@ -64,7 +67,7 @@ DOMAIN_WORD = {"point": "points", "face": "faces", "edge": "edges", "corner": "f
 MAIN = "__main__"
 LIB_PACKAGE = "toast_lib"
 MAX_INPUTS = 4
-NEARPOINTS_MAX_LIMIT = 4096
+NEARPOINTS_MAX_LIMIT = ARRAY_MAX
 INT32_MIN, INT32_MAX = -(2**31), 2**31 - 1
 
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -110,7 +113,7 @@ BUILTINS = set(UNARY_MATH) | {
     "point_faces", "point_neighbors", "corner_point", "corner_face", "set_point_attr",
     "set_face_attr", "ray_cast", "closest_point", "sample_nearest_surface", "voronoi",
     "curl_noise", "len", "curve_attr", "instance_attr", "curve_count", "curve_points",
-    "remove_curve", "add_curve", "extend_curve", "remove_instance", "quat", "mat4", "quat_axis_angle", "quat_euler",
+    "remove_curve", "add_curve", "extend_curve", "random_surface_point", "remove_instance", "quat", "mat4", "quat_axis_angle", "quat_euler",
     "quat_between", "rotate", "slerp", "inverse", "to_euler", "transpose", "transform_point",
     "transform_direction", "mat4_translation", "mat4_rotation", "mat4_scale", "mat4_compose",
     "output",
@@ -565,9 +568,15 @@ class Compiler:
         if expect is not None and expect.is_vec and len(node.elts) == expect.ncomp:
             return self._sequence(node, expect)
         if not node.elts:
-            self.err("an empty list has no size: create a list with [value] * count", node)
-        if len(node.elts) > ARRAY_MAX:
-            self.err(f"lists can hold at most {ARRAY_MAX} values", node)
+            if expect is not None and is_growable(expect):
+                return E(expect.zero, expect)
+            self.err("an empty list has no size: create a list with [value] * count, or a "
+                     "growable one with xs: list[float, 100] = []", node)  # fmt: skip
+        if expect is not None and is_growable(expect):
+            self.err("a growable list starts empty (= []); add values with .append()", node)
+        if len(node.elts) > LITERAL_MAX:
+            self.err(f"a list written out can hold at most {LITERAL_MAX} values; make bigger "
+                     "ones with [value] * count", node)  # fmt: skip
         want = array_parts(expect)[0] if expect is not None and expect.is_array else None
         es = [self.expr(el, want) for el in node.elts]
         t = want or self._list_element_type(es, node)
@@ -763,9 +772,11 @@ class Compiler:
         elif (isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name)
               and f.value.id in self.locals):  # fmt: skip
             t = self.locals[f.value.id].type
+            if is_growable(t):
+                return self._list_method(f.value.id, t, f.attr, node)
             if t.is_array:
-                self.err(f"{f.value.id}.{f.attr}(): lists have a fixed size in Toast and no "
-                         "methods; create them with [value] * count", node)  # fmt: skip
+                self.err(f"{f.value.id}.{f.attr}(): this list has a fixed size; for .append(), "
+                         f"declare a growable one: {f.value.id}: list[float, 100] = []", node)  # fmt: skip
             self.err(f"a {t} has no method .{f.attr}()", node)
         elif isinstance(f, ast.Attribute) and self._dotted(f.value) is not None:
             prefix = self._dotted(f.value)
@@ -790,6 +801,22 @@ class Compiler:
                 return self._unary_math(name, node)
             self.err(f"'{name}' is not a Toast builtin", node)
         return handler(node, expect)
+
+    def _list_method(self, name, t, method, node):
+        """append(value), pop() and clear() on a growable list variable."""
+        elem = array_parts(t)[0]
+        var = f"v_{name}"
+        if method == "append":
+            (a,) = self._args(node, f"{name}.append", 1)
+            v = self.coerce(self.expr(a, elem), elem, a, f"{name}.append() value")
+            return E(f"{var}.append({v})", NONE)
+        if method == "pop":
+            self._args(node, f"{name}.pop", 0)
+            return E(f"{var}.pop()", elem)
+        if method == "clear":
+            self._args(node, f"{name}.clear", 0)
+            return E(f"{var}.clear()", NONE)
+        self.err(f"lists have .append(), .pop() and .clear(), not .{method}()", node)
 
     def _args(self, node, fname, n_min, n_max=None, kw=()):
         n_max = n_min if n_max is None else n_max
@@ -1064,6 +1091,8 @@ class Compiler:
     def call_len(self, node, expect):
         (a,) = self._args(node, "len", 1)
         e = self.expr(a)
+        if is_growable(e.type):
+            return E(f"({e.code}).len()", INT)
         if e.type.is_array:
             n = array_parts(e.type)[1]
             return E(str(n), INT, n)
@@ -1416,6 +1445,18 @@ class Compiler:
             if len(args) == 4 else "3.4e38f"
         )  # fmt: skip
         return E(f"toast::ray_cast(c, {inp}, {origin}, {direction}, {dist})", HIT)
+
+    def call_random_surface_point(self, node, expect):
+        """A random point on a mesh's surface, area weighted: a hit (position, normal, face...)."""
+        args = self._args(node, "random_surface_point", 2, 3)
+        inp = self._input_arg(args[0], "random_surface_point")
+        self.host_uses.add("surface_point")
+        self.inputs_used.add(inp)
+        self.surface_inputs.add(inp)
+        id_ = self.coerce(self.expr(args[1]), INT, args[1], "random_surface_point() id")
+        seed = (self.coerce(self.expr(args[2]), INT, args[2], "random_surface_point() seed")
+                if len(args) == 3 else "0")  # fmt: skip
+        return E(f"toast::random_surface_point(c, {inp}, {id_}, {seed})", HIT)
 
     def call_closest_point(self, node, expect):
         args = self._args(node, "closest_point", 2, 3)
@@ -1847,6 +1888,21 @@ class Compiler:
         ann = s.annotation
         name = s.target.id
         if (isinstance(ann, ast.Subscript) and isinstance(ann.value, ast.Name)
+                and ann.value.id == "list" and isinstance(ann.slice, ast.Tuple)):  # fmt: skip
+            # list[elem, capacity] = []: a growable list.
+            if len(ann.slice.elts) != 2:
+                self.err("a growable list is declared list[type, capacity], like "
+                         "xs: list[vec3, 256] = []", s)  # fmt: skip
+            elem, cap_node = ann.slice.elts
+            if not (isinstance(elem, ast.Name) and elem.id in BY_NAME):
+                self.err(f"list[...]: unknown element type (use one of {', '.join(BY_NAME)})", s)
+            cap = self._const_int(cap_node, "the capacity of a list", 1, ARRAY_MAX)
+            t = growable_type(BY_NAME[elem.id], cap)
+            if s.value is None:
+                self.err(f"'{name}: list[{elem.id}, {cap}]' needs a value: = []", s)
+            self._assign_local(name, self.expr(s.value, t), s)
+            return
+        if (isinstance(ann, ast.Subscript) and isinstance(ann.value, ast.Name)
                 and ann.value.id == "list"):  # fmt: skip
             elem = ann.slice
             if not (isinstance(elem, ast.Name) and elem.id in BY_NAME):
@@ -1976,11 +2032,11 @@ class Compiler:
         t = self.new_tmp()
         self.line("{")
         self.depth += 1
-        self.line(f"int64_t {t}_buf[{mx}];")
-        self.line(f"const int32_t {t}_n = toast::nearpoints(c, {inp}, {pos}, {r}, {mx}, {t}_buf);")
+        self.line(f"toast::Array<int64_t, {mx}> {t}_buf;")
+        self.line(f"const int32_t {t}_n = toast::nearpoints(c, {inp}, {pos}, {r}, {mx}, {t}_buf.v);")
         self.line(f"for (int32_t {t} = 0; {t} < {t}_n; {t}++) {{")
         self.depth += 1
-        self.line(f"{var} = int32_t({t}_buf[{t}]);")
+        self.line(f"{var} = int32_t({t}_buf.v[{t}]);")
         self.loop_depth += 1
         self.depth -= 1
         self.block(s.body)
@@ -2008,9 +2064,14 @@ class Compiler:
         self.line("{")
         self.depth += 1
         self.line(f"const {e.type.cpp} {t}_list = {e.code};")
-        self.line(f"for (int32_t {t} = 0; {t} < {n}; {t}++) {{")
-        self.depth += 1
-        self.line(f"v_{name} = {t}_list.v[{t}];")
+        if is_growable(e.type):
+            self.line(f"for (int32_t {t} = 0; {t} < {t}_list.n; {t}++) {{")
+            self.depth += 1
+            self.line(f"v_{name} = {t}_list.data.v[{t}];")
+        else:
+            self.line(f"for (int32_t {t} = 0; {t} < {n}; {t}++) {{")
+            self.depth += 1
+            self.line(f"v_{name} = {t}_list.v[{t}];")
         self.loop_depth += 1
         self.depth -= 1
         self.block(s.body)
@@ -2041,11 +2102,11 @@ class Compiler:
         t = self.new_tmp()
         self.line("{")
         self.depth += 1
-        self.line(f"int64_t {t}_buf[{mx}];")
-        self.line(f"const int32_t {t}_n = toast::primpoints(c, {inp}, {prim}, {mx}, {t}_buf);")
+        self.line(f"toast::Array<int64_t, {mx}> {t}_buf;")
+        self.line(f"const int32_t {t}_n = toast::primpoints(c, {inp}, {prim}, {mx}, {t}_buf.v);")
         self.line(f"for (int32_t {t} = 0; {t} < {t}_n; {t}++) {{")
         self.depth += 1
-        self.line(f"{var} = int32_t({t}_buf[{t}]);")
+        self.line(f"{var} = int32_t({t}_buf.v[{t}]);")
         self.loop_depth += 1
         self.depth -= 1
         self.block(s.body)
@@ -2070,11 +2131,11 @@ class Compiler:
         t = self.new_tmp()
         self.line("{")
         self.depth += 1
-        self.line(f"int64_t {t}_buf[{mx}];")
-        self.line(f"const int32_t {t}_n = {call.format(buf=f'{t}_buf')};")
+        self.line(f"toast::Array<int64_t, {mx}> {t}_buf;")
+        self.line(f"const int32_t {t}_n = {call.format(buf=f'{t}_buf.v')};")
         self.line(f"for (int32_t {t} = 0; {t} < {t}_n; {t}++) {{")
         self.depth += 1
-        self.line(f"{var} = int32_t({t}_buf[{t}]);")
+        self.line(f"{var} = int32_t({t}_buf.v[{t}]);")
         self.loop_depth += 1
         self.depth -= 1
         self.block(s.body)

@@ -979,6 +979,64 @@ def sketch():
     save("12_sketch")
 
 
+def fountain():
+    new_file(300)
+    bpy.context.preferences.edit.keyframe_new_interpolation_type = "LINEAR"
+    bpy.ops.mesh.primitive_monkey_add(size=0.9, location=(0, 0, 1.4))
+    monkey = bpy.context.active_object
+    monkey.name = "Emitter"
+    monkey.modifiers.new("Subdivision", "SUBSURF").levels = 1
+    bpy.ops.object.shade_smooth()
+    monkey.data.materials.append(material("Emitter", color=(0.08, 0.08, 0.1), roughness=0.3, metallic=1.0))
+    for frame, angle in ((1, 0), (301, 360)):
+        monkey.rotation_euler.z = math.radians(angle)
+        monkey.keyframe_insert("rotation_euler", index=2, frame=frame)
+
+    obj = mesh_object("Fountain")
+    t = Tree(obj, "Fountain")
+    info = t.node("GeometryNodeObjectInfo", (0, -300))
+    info.inputs["Object"].default_value = monkey
+    info.transform_space = "RELATIVE"
+    sin, sout = t.sim_zone(100, 800)
+    emit = t.toast("fountain/emit", (300, 0))
+    move = t.toast("fountain/move", (550, 0))
+    t.link(t.input.outputs[0], sin.inputs["Geometry"])
+    t.link(sin.outputs["Geometry"], emit.inputs["Geometry"])
+    t.link(info.outputs["Geometry"], emit.inputs["Input 1"])
+    t.link(emit.outputs[0], move.inputs["Geometry"])
+    t.link(sin.outputs["Delta Time"], move.inputs["delta_time"])
+    t.link(move.outputs[0], sout.inputs["Geometry"])
+    to_points = t.node("GeometryNodeMeshToPoints", (1000, 0))
+    to_points.inputs["Radius"].default_value = 0.009
+    t.link(sout.outputs["Geometry"], to_points.inputs["Mesh"])
+    setmat = t.node("GeometryNodeSetMaterial", (1200, 0))
+    setmat.inputs["Material"].default_value = material(
+        "Spark", attribute="life_left", emission=2.0, color=(0, 0, 0), roughness=0.5,
+        ramp=[(0.0, (0.6, 0.05, 0.02)), (0.5, (1.0, 0.45, 0.08)), (1.0, (1.0, 0.95, 0.7))])
+    t.link(to_points.outputs[0], setmat.inputs["Geometry"])
+    t.finish(setmat.outputs[0], 1400)
+    obj.data.materials.append(setmat.inputs["Material"].default_value)
+
+    bpy.ops.mesh.primitive_plane_add(size=30)
+    bpy.context.active_object.data.materials.append(material("Floor", color=(0.05, 0.05, 0.06), roughness=0.4))
+    camera((0, -9, 3.2), (0, 0, 1.2), lens=40)
+    light("SUN", (0, 0, 10), 1.0, rotation=(50, 0, 30), size=3)
+    note([
+        "Fountain: sparks born on a turning monkey, every frame. Press Play.",
+        "",
+        "In the Simulation Zone:",
+        "emit.py (Geometry)  `rate` new particles per frame at random places on the Emitter",
+        "                    (Input 1), area weighted: random_surface_point(); they start along",
+        "                    the surface normal, ids from the frame so the same frame always",
+        "                    emits the same sparks",
+        "move.py (Points)    gravity, drag, a lossy bounce on the floor, and death of old age",
+        "                    (remove_point)",
+        "",
+        "Try: rate 3000, speed, spread, life, bounce. Sculpt or swap the Emitter mesh.",
+    ])
+    save("13_fountain")
+
+
 EXAMPLES = {
     "flocking": flocking,
     "reaction_diffusion": reaction_diffusion,
@@ -992,6 +1050,7 @@ EXAMPLES = {
     "metaballs": metaballs,
     "trails": trails,
     "sketch": sketch,
+    "fountain": fountain,
 }
 
 if __name__ == "__main__":

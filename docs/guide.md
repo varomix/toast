@@ -103,7 +103,8 @@ Toast is a statically typed subset of Python.
 
 ### Lists
 
-Lists have a fixed size, known when the code compiles (at most 4096 values):
+Lists have a size known when the code compiles: a fixed size, or a growable list's capacity
+(up to 1048576 values; a list written out value by value holds at most 4096):
 
 ```toast
 d = [0.0] * 8                 # 8 floats, all 0
@@ -119,9 +120,24 @@ for w in weights:
 
 Reading outside the list gives 0 and writing outside it does nothing, so a wrong index never
 crashes Blender. Lists are values, like vectors: `b = a` and passing `a` to a helper make a copy
-(unlike Python), so return a changed list from a helper. A list can't be stored in an attribute,
-and there is no `append()`. Where a vector is expected, a list of numbers is a vector:
-`@position = [0, 0, 1]`.
+(unlike Python), so return a changed list from a helper. A list can't be stored in an attribute.
+Where a vector is expected, a list of numbers is a vector: `@position = [0, 0, 1]`.
+
+A **growable list** is declared with its type and capacity, starts empty, and has `append()`,
+`pop()` and `clear()`; `len()` and `for` loops see only the values in it:
+
+```toast
+close: list[int, 256] = []
+for j in nearby_points(0, @position, 0.5, 4096):
+    if j != @index:
+        close.append(j)
+@neighbors: int = len(close)
+last = close.pop()            # removes and returns the last value (0 when empty)
+```
+
+Appending to a full list does nothing. Lists bigger than 256 KB (65536 floats, 21845 vec3s) live
+on the heap instead of the stack: they work the same but cost an allocation per element, so keep
+big lists for Run Over Geometry or a few elements.
 
 ### Rotations and transforms
 
@@ -304,6 +320,7 @@ These match Blender's nodes exactly (bit for bit). Put the scale in the position
 | `corner_point(input, corner)`, `corner_face(input, corner)` | The point and face of a face corner, or -1. |
 | `ray_cast(input, origin, direction, max_distance)` | A hit: `.hit`, `.position`, `.normal`, `.distance`, `.face` (-1 without a hit). |
 | `closest_point(input, position)` | The closest point on the surface, as a hit. |
+| `random_surface_point(input, id, seed=0)` | A random point on the surface, area weighted, as a hit (position, normal, face). The same `id` and `seed` give the same point: for emitting particles. |
 | `sample_nearest_surface(input, "name", position)` | A point attribute interpolated at the closest surface point. |
 
 Loops over related elements take a constant maximum count:
@@ -482,6 +499,25 @@ for c in range(count):
         n += 1
         p += (0, 0.05, 0) + curl_noise(p * 2) * 0.02
     add_curve(pts, size)
+```
+
+### Emit particles from a surface (Run Over: Geometry)
+
+Inside a Simulation Zone, with the emitter mesh on Input 1 and a Points node (velocity, age,
+removal) after it:
+
+```toast geometry
+rate = param("rate", 100)
+for k in range(rate):
+    pid = int(@frame) * rate + k          # the same frame emits the same particles
+    h = random_surface_point(1, pid)
+    if not h.hit:
+        break
+    p = add_point(h.position)
+    set_point_attr(p, "velocity", h.normal * param("speed", 2.0))
+    set_point_attr(p, "id", pid)
+@velocity: vec3
+@id: int
 ```
 
 ### Select with code, then use the selection in other nodes

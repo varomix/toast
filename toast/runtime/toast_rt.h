@@ -31,7 +31,7 @@ typedef __SIZE_TYPE__ size_t;
 #  define offsetof(type, member) __builtin_offsetof(type, member)
 #endif
 
-#define TOAST_ABI_VERSION 6
+#define TOAST_ABI_VERSION 7
 
 #if defined(_WIN32)
 #  define TOAST_EXPORT extern "C" __declspec(dllexport)
@@ -114,6 +114,9 @@ typedef struct ToastAttr {
  *   only). Points from cmd_add_point on curves must each be in exactly one new curve.
  * - cmd_extend_curve: queues a new point at the tip of an existing curve (curves only) and returns
  *   its handle, like cmd_add_point. It copies the tip point's other attributes.
+ * - surface_point: a point on the triangles of `input`'s mesh (as it was before the run), area
+ *   weighted: `u` picks the triangle (by cumulative area, in double), `v` and `w` the place in it
+ *   (folded back into the triangle when v + w > 1). Fills a hit (distance 0); returns out->hit.
  * Commands are merged sorted by (src, emission order), so results don't depend on threads. */
 typedef struct ToastHost {
   void *self;
@@ -153,6 +156,9 @@ typedef struct ToastHost {
       void *self, ToastCmdBuffer *cmd, int64_t src, const int64_t *pts, int32_t n);
   int64_t (*cmd_extend_curve)(
       void *self, ToastCmdBuffer *cmd, int64_t src, int64_t curve, const float *pos3);
+  /* ABI 7. */
+  int32_t (*surface_point)(
+      void *self, int32_t input, float u, float v, float w, ToastHit *out);
 } ToastHost;
 
 typedef struct ToastCtx {
@@ -1266,6 +1272,20 @@ inline float random(int32_t id, int32_t seed)
   return hash_to_float(uint32_t(seed), uint32_t(id));
 }
 
+/* random_surface_point(input, id, seed): a random point on the surface of input's mesh, area
+ * weighted, the same for the same (id, seed). */
+inline Hit random_surface_point(const ToastCtx *c, int32_t input, int32_t id, int32_t seed)
+{
+  ToastHit h{};
+  c->host->surface_point(c->host->self,
+                         input,
+                         random(id, seed),
+                         random(id, seed + 1000003),
+                         random(id, seed + 2000006),
+                         &h);
+  return to_hit(h);
+}
+
 /* rand(x): hash to [0, 1]. Floats and vectors hash their bits, ints hash their value. */
 inline float rand(int32_t x)
 {
@@ -1719,10 +1739,21 @@ inline quat mat_rotation(const float4x4 &m)
 /* -------------------------------------------------------------------- */
 /* Fixed-size arrays (Toast lists). Values, like vectors: assigning copies. Indices wrap once
  * from the end like Python (-1 is the last); other out-of-range reads give zero and writes are
- * dropped, so a bad index never crashes Blender. */
+ * dropped, so a bad index never crashes Blender. Up to TOAST_STACK_LIST_BYTES they live on the
+ * stack; bigger ones on the heap (Blender's worker threads have a few MB of stack). Every Toast
+ * type is trivially copyable, so copies are plain byte copies. */
 
-template<typename T, int N> struct Array {
+extern "C" void *calloc(size_t count, size_t size);
+extern "C" void free(void *ptr);
+
+#define TOAST_STACK_LIST_BYTES 262144
+
+template<typename T, int N, bool Heap = (sizeof(T) * size_t(N) > TOAST_STACK_LIST_BYTES)>
+struct Array;
+
+template<typename T, int N> struct Array<T, N, false> {
   T v[N + 1]; /* v[N] absorbs out-of-range writes. */
+  static constexpr int32_t capacity = N;
   static Array filled(const T &x)
   {
     Array a;
@@ -1747,16 +1778,110 @@ template<typename T, int N> struct Array {
   }
 };
 
-/* add_curve(points, count): a curve through the first `count` point numbers of a list. */
-template<int N>
-inline void add_curve_list(const ToastCtx *c, int64_t src, const Array<int32_t, N> &pts, int32_t n)
-{
-  n = n < 0 ? 0 : (n > N ? N : n);
-  int64_t list[N > 0 ? N : 1];
-  for (int32_t k = 0; k < n; k++) {
-    list[k] = pts.v[k];
+template<typename T, int N> struct Array<T, N, true> {
+  T *v; /* N + 1 values, zeroed; v[N] absorbs out-of-range writes. */
+  static constexpr int32_t capacity = N;
+  Array() : v(static_cast<T *>(calloc(size_t(N) + 1, sizeof(T)))) {}
+  Array(const Array &other) : Array()
+  {
+    __builtin_memcpy(v, other.v, sizeof(T) * (size_t(N) + 1));
   }
-  c->host->cmd_add_curve(c->host->self, c->cmd, src, list, n);
+  Array(Array &&other) : v(other.v)
+  {
+    other.v = nullptr;
+  }
+  Array &operator=(const Array &other)
+  {
+    if (this != &other) {
+      __builtin_memcpy(v, other.v, sizeof(T) * (size_t(N) + 1));
+    }
+    return *this;
+  }
+  Array &operator=(Array &&other)
+  {
+    T *tmp = v;
+    v = other.v;
+    other.v = tmp;
+    return *this;
+  }
+  ~Array()
+  {
+    free(v);
+  }
+  static Array filled(const T &x)
+  {
+    Array a;
+    for (int k = 0; k < N; k++) {
+      a.v[k] = x;
+    }
+    return a;
+  }
+  T get(int32_t k) const
+  {
+    if (k < 0) {
+      k += N;
+    }
+    return (k >= 0 && k < N) ? v[k] : T{};
+  }
+  T &at(int32_t k)
+  {
+    if (k < 0) {
+      k += N;
+    }
+    return (k >= 0 && k < N) ? v[k] : v[N];
+  }
+};
+
+/* Growable lists (`xs: list[vec3, 256] = []`): up to N values, `n` of them in use. Reads past
+ * `n` give zero, writes past `n` and appends to a full list are dropped. */
+template<typename T, int N> struct List {
+  Array<T, N> data;
+  int32_t n = 0;
+  static constexpr int32_t capacity = N;
+  T get(int32_t k) const
+  {
+    if (k < 0) {
+      k += n;
+    }
+    return (k >= 0 && k < n) ? data.v[k] : T{};
+  }
+  T &at(int32_t k)
+  {
+    if (k < 0) {
+      k += n;
+    }
+    return (k >= 0 && k < n) ? data.v[k] : data.v[N];
+  }
+  void append(const T &x)
+  {
+    if (n < N) {
+      data.v[n++] = x;
+    }
+  }
+  T pop()
+  {
+    return n > 0 ? data.v[--n] : T{};
+  }
+  void clear()
+  {
+    n = 0;
+  }
+  int32_t len() const
+  {
+    return n;
+  }
+};
+
+/* add_curve(points, count): a curve through the first `count` point numbers of a list (fixed or
+ * growable; for a growable one, at most its length). */
+template<typename L> inline void add_curve_list(const ToastCtx *c, int64_t src, const L &pts, int32_t n)
+{
+  n = n < 0 ? 0 : (n > L::capacity ? L::capacity : n);
+  Array<int64_t, L::capacity> list;
+  for (int32_t k = 0; k < n; k++) {
+    list.v[k] = pts.get(k);
+  }
+  c->host->cmd_add_curve(c->host->self, c->cmd, src, list.v, n);
 }
 
 }  // namespace toast

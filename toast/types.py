@@ -65,7 +65,10 @@ VECS = {2: VEC2, 3: VEC3, 4: VEC4}
 BY_NAME = {t.name: t for t in (FLOAT, INT, BOOL, VEC2, VEC3, VEC4, QUAT, MAT4)}
 # Types an array (Toast list) can hold.
 ARRAY_ELEMENTS = tuple(BY_NAME.values())
-ARRAY_MAX = 4096
+# Values written out in a list literal, and values in any list ([value] * count, growable lists,
+# query loops). Big lists live on the heap (see toast_rt.h), so the second limit is about memory.
+LITERAL_MAX = 4096
+ARRAY_MAX = 1 << 20
 
 
 @functools.lru_cache(maxsize=None)
@@ -75,11 +78,22 @@ def array_type(element, size):
                 f"toast::Array<{element.cpp}, {size}>{{}}")  # fmt: skip
 
 
+@functools.lru_cache(maxsize=None)
+def growable_type(element, capacity):
+    """A list of up to ``capacity`` values of ``element`` that grows with append()."""
+    return Type(f"list[{element.name}, <={capacity}]", f"toast::List<{element.cpp}, {capacity}>",
+                0, -1, f"toast::List<{element.cpp}, {capacity}>{{}}")  # fmt: skip
+
+
+def is_growable(t):
+    return t.is_array and "<=" in t.name
+
+
 def array_parts(t):
-    """(element type, size) of an array type."""
+    """(element type, size) of an array type; for a growable list, its capacity."""
     inner = t.name[len("list["):-1]
     name, size = inner.split(", ")
-    return BY_NAME[name], int(size)
+    return BY_NAME[name], int(size.lstrip("<="))
 
 # Attributes with a known type. Anything else is a float unless declared, e.g. `@flag: bool`.
 # Names are Blender's: `@color` is the active color attribute, `@normal` reads vertex, face or

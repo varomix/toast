@@ -816,6 +816,31 @@ class TestLists(unittest.TestCase):
         out = self.run_points(code)
         np.testing.assert_array_equal(out["s"], [[1, 2, 3]] * 4)
 
+    def test_growable_lists(self):
+        out = self.run_points(GROWABLE_CODE, n=8)
+        k = np.arange(8)
+        np.testing.assert_array_equal(out["n"], k + 1)          # k + 2 appended, one popped
+        np.testing.assert_array_equal(out["s"], k * (k + 1) / 2 + (k + 1) + 100)
+        np.testing.assert_array_equal(out["z"], [0] * 8)        # past the length reads 0
+
+    def test_big_lists_on_the_heap(self):
+        out = run_all_threads(self, toast.build(BIG_LISTS_CODE), [sphere_points(300)], grain=64).points
+        np.testing.assert_array_equal(out["big"], [5.0 + 299999] * 300)
+        np.testing.assert_array_equal(out["near"], [300] * 300)
+
+    def test_random_surface_point(self):
+        # Two quads, the second 3x larger: about 3/4 of the points land on it, all on the plane.
+        P = np.array([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (4, 0, 0), (4, 1, 0)], np.float32)
+        quads = Geometry({"position": P}, prims=[[0, 1, 2, 3], [1, 4, 5, 2]])
+        code = "h = random_surface_point(1, @index, 9)\n@position = h.position\n@f: int = h.face\n"
+        pts = Geometry({"position": np.zeros((4000, 3), np.float32)})
+        out = run_all_threads(self, toast.build(code), [pts, quads], grain=256).points
+        self.assertTrue(np.all(out["position"][:, 2] == 0))
+        self.assertTrue(np.all((out["position"][:, 0] >= 0) & (out["position"][:, 0] <= 4)))
+        self.assertAlmostEqual(float(np.mean(out["f"] == 1)), 0.75, delta=0.03)
+        inside = out["position"][out["f"] == 0]
+        self.assertTrue(np.all(inside[:, 0] <= 1))
+
     def test_list_as_vector_where_a_vector_is_expected(self):
         out = self.run_points("@position = [0, 0, 1]\n")
         np.testing.assert_array_equal(out["position"], [[0, 0, 1]] * 4)
@@ -823,7 +848,10 @@ class TestLists(unittest.TestCase):
     def test_errors(self):
         for src, msg in (
             ("a = []\n", "an empty list has no size"),
-            ("a = [0] * 5000\n", "between 1 and 4096"),
+            ("a = [0] * 2000000\n", "between 1 and 1048576"),
+            ("a: list[float, 4] = [1.0]\n", "starts empty"),
+            ("a: list[float, 4] = []\na.push(1.0)\n", "not .push()"),
+            ("a: list[float] = []\n", "an empty list has no size"),
             ("a = [1, 2]\na.append(3)\n", "fixed size"),
             ("a = [1, (0, 0, 0)]\n", "same type"),
             ("a = [1, 2]\na = [1, 2, 3]\n", "can't assign"),
@@ -1518,6 +1546,33 @@ remove_curve(0)
 extend_curve(1, (4, 2, 0))
 remove_point(2)
 """
+GROWABLE_CODE = """xs: list[float, 300000] = []
+for k in range(@index + 2):
+    xs.append(float(k))
+last = xs.pop()
+xs[0] = 100.0
+t = 0.0
+for v in xs:
+    t += v
+@s: float = t + last
+@n: int = len(xs)
+@z: float = xs[len(xs)] + xs[-100]
+"""
+BIG_LISTS_CODE = """big = [1.0] * 300000
+big[-1] = 5.0
+for k in range(1, 300000):
+    big[k] = big[k - 1] + 1.0 if k < 299999 else big[k]
+n = 0
+for j in nearby_points(0, @position, 10.0, 50000):
+    n += 1
+@big: float = big[-1] + big[299998]
+@near: int = n
+"""
+RANDOM_SURFACE_CODE = """h = random_surface_point(0, @index, 3)
+@sp: vec3 = h.position
+@sf: int = h.face
+@sn: vec3 = h.normal
+"""
 GP_DRAW_CODE = "add_curve((add_point((0, 0, 5)), add_point((1, 0, 5))))\n"
 CURVES_CODE = """
 n = 0
@@ -1576,6 +1631,9 @@ class TestBlenderTypes(unittest.TestCase):
         {"name": "edit_curves", "input": "curves_k", "run_over": "GEOMETRY", "code": EDIT_CURVES_CODE},
         {"name": "add_curve_on_mesh", "input": "grid", "run_over": "POINTS",
          "code": "if @index == 0:\n    add_curve((0, 1))\n"},
+        {"name": "grid_surface", "input": "grid", "run_over": "POINTS", "code": RANDOM_SURFACE_CODE},
+        {"name": "grid_lists", "input": "grid", "run_over": "POINTS", "code": GROWABLE_CODE},
+        {"name": "grid_big_lists", "input": "grid", "run_over": "POINTS", "code": BIG_LISTS_CODE},
         {"name": "gp_points", "input": "gp", "run_over": "POINTS", "code": CURVES_POINTS_CODE},
         {"name": "gp_grow", "input": "gp_w", "run_over": "CURVES", "code": GROW_CODE},
         {"name": "gp_draw", "input": "gp", "run_over": "GEOMETRY", "code": GP_DRAW_CODE},
@@ -1737,6 +1795,27 @@ class TestBlenderTypes(unittest.TestCase):
         self.assertEqual(r["curves"], [len(c) for c in out.curves])
         self.assert_bits(r["P"], out.points["position"])
         self.assertEqual(r["attrs"]["k"]["values"], out.curve_attrs["k"].tolist())
+
+    def test_random_surface_point_in_blender(self):
+        r = self.ok("grid_surface")
+        positions = self.f32(r["P"], (-1, 3))
+        grid = Geometry({"position": positions.copy()}, prims=r["faces"])
+        out = run(toast.build(RANDOM_SURFACE_CODE), [grid]).points
+        self.assert_bits(r["attrs"]["sp"]["values"], out["sp"])
+        np.testing.assert_allclose(self.f32(r["attrs"]["sn"]["values"], (-1, 3)), out["sn"], atol=1e-6)
+        self.assertEqual(r["attrs"]["sf"]["values"], out["sf"].tolist())
+
+    def test_growable_and_big_lists_in_blender(self):
+        for name, code, attrs in (("grid_lists", GROWABLE_CODE, ("s", "n", "z")),
+                                  ("grid_big_lists", BIG_LISTS_CODE, ("big", "near"))):  # fmt: skip
+            r = self.ok(name)
+            positions = self.f32(r["P"], (-1, 3))
+            out = run(toast.build(code), [Geometry({"position": positions.copy()})]).points
+            for a in attrs:
+                if out[a].dtype == np.float32:
+                    self.assert_bits(r["attrs"][a]["values"], out[a])
+                else:
+                    self.assertEqual(r["attrs"][a]["values"], out[a].tolist())
 
     def test_grease_pencil_points(self):
         r = self.ok("gp_points")

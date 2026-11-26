@@ -167,6 +167,11 @@ Euclidean, detail 0, randomness `r`; distance, color and position outputs). Scal
   Over Geometry run on curves (made if missing). The node rebuilds the curves once after the run:
   input curves with their new tips, then new curves (poly), then removals; `_merge_curves` in the
   harness is the reference.
+- ABI 7: adds `surface_point(input, u, v, w, hit)`: `u` picks a triangle of the input's mesh by
+  cumulative area (twice the area per triangle, in double, summed in `corner_tris` order, upper
+  bound), `v`/`w` are the barycentric weights of its second and third corner (folded when
+  v + w > 1); position `a * (1 - v - w) + b * v + c * w` in float. Kernels draw u, v, w with
+  `random(id, seed)`, `seed + 1000003`, `seed + 2000006`.
 
 ## Measurements (2026-11-24, 32 threads, g++ 14, fork 5.3)
 

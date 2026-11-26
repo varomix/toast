@@ -1,6 +1,6 @@
 # Toast examples
 
-Twelve .blend files that show what Toast does, most of them inside Blender's Simulation Zones, and
+Thirteen .blend files that show what Toast does, most of them inside Blender's Simulation Zones, and
 how far it goes. Open one in the Toast build of Blender, allow Auto Run Python Scripts (or trust
 the file), and press Play. Each file has a text named **README** with what to look at and what to
 try. The Toast code is in the files as texts, and in [`src/`](src) for reading here.
@@ -19,6 +19,7 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
 | [10_metaballs](10_metaballs.blend) | Blobs that melt together and apart | Marching cubes in Toast (Run Over Geometry): a 4096-entry table in a library, lists as layer caches so cubes share points, `add_point`/`add_face` building a closed mesh every frame |
 | [11_trails](11_trails.blend) | Particles in a flow, each leaving a trail | Curves made by Toast: `add_point` + `add_curve` (Run Over Geometry), `extend_curve` and `remove_point` per curve each frame (Run Over Curves) in a Simulation Zone |
 | [12_sketch](12_sketch.blend) | A Grease Pencil drawing that grows hairs and boils like hand-drawn animation | Toast on Grease Pencil: Run Over Geometry draws new strokes into each layer (`add_curve`), Run Over Points jitters every stroke point and its `@radius` |
+| [13_fountain](13_fountain.blend) | Sparks born on a turning monkey, bouncing on the floor | Particles: emission with `random_surface_point` on Input 1 (Run Over Geometry), gravity, bounce and death by age (Run Over Points) in a Simulation Zone |
 
 <p>
   <img src="images/01_flocking.png" width="32%">
@@ -34,6 +35,7 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
   <img src="images/10_metaballs.png" width="32%">
   <img src="images/11_trails.png" width="32%">
   <img src="images/12_sketch.png" width="32%">
+  <img src="images/13_fountain.png" width="32%">
 </p>
 <img src="images/06_mandelbulb.png" width="40%">
 
@@ -56,6 +58,7 @@ included, measured with `run_examples.py` below. Default settings first, then sc
 | Ripples\* | 76800 points x 4 steps | 3.7 | 750000 points x 4 steps | 13.5 |
 | Metaballs\* | 8 balls, 56^3 cubes, one core | 3.5 | 60^3 cubes, lower threshold (bigger blobs) | 4.3 |
 | Trails\* | 1200 curves x 48 points | 1.0 | 20000 curves x 120 points (2.4 million) | 12 |
+| Fountain\* | 250 per frame, ~18000 alive | 1.1 | 4000 per frame, ~286000 alive | 3.1 |
 
 \* Measured on an Apple M3 Max (14 cores, built-in compiler) instead.
 
@@ -81,9 +84,9 @@ edge in place.
 - **Reading an attribute another node wrote needs its type.** `@previous` without an annotation is
   a float, so a vec3 written by an earlier node read wrong, silently. The node now warns about
   it and names the type (`fluid/relax.py` declares `@previous: vec3`).
-- **Lists hold up to 4096 values** and `nearby_points()` visits up to 4096 points. The hair keeps
-  32 points per strand, the tree a stack of 512 branches. The metaballs stop at 60^3 cubes: a layer of
-  61 x 61 corners is the most a list holds, and the triangle table fills one list exactly.
+- **Lists held up to 4096 values** when these were made (now 1048576, bigger ones on the heap), so
+  the hair keeps 32 points per strand, the tree a stack of 512 branches, and the metaballs stop at
+  60^3 cubes: a layer of 61 x 61 corners fit in a list, and the triangle table fills one exactly.
 - **Run Over Geometry is sequential**, see above.
 - Blender renders curves only from Curves objects, not from mesh objects: the hair is a Curves
   object that reads the head's mesh.

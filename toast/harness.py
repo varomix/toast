@@ -200,6 +200,11 @@ NCURVES_FN = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_void_p, ctypes.c_int32)
 REMOVE_CURVE_FN = ctypes.CFUNCTYPE(
     None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64
 )
+# ABI 7.
+SURFACE_POINT_FN = ctypes.CFUNCTYPE(
+    ctypes.c_int32, ctypes.c_void_p, ctypes.c_int32, ctypes.c_float, ctypes.c_float,
+    ctypes.c_float, ctypes.POINTER(ToastHit),
+)  # fmt: skip
 # ABI 6.
 EXTEND_CURVE_FN = ctypes.CFUNCTYPE(
     ctypes.c_int64, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64,
@@ -285,6 +290,7 @@ class ToastHost(ctypes.Structure):
         ("cmd_remove_curve", REMOVE_CURVE_FN),
         ("cmd_add_curve", ADD_PRIM_FN),
         ("cmd_extend_curve", EXTEND_CURVE_FN),
+        ("surface_point", SURFACE_POINT_FN),
     ]
 
 
@@ -392,10 +398,12 @@ class _Host:
             REMOVE_CURVE_FN(self._guard(self._remove_curve, None)),
             ADD_PRIM_FN(self._guard(self._add_curve, None)),
             EXTEND_CURVE_FN(self._guard(self._extend_curve, 0)),
+            SURFACE_POINT_FN(self._guard(self._surface_point, 0)),
         )  # fmt: skip
         self._keep_fns = (self.struct.ray_cast, self.struct.closest_point, self.struct.ncurves,
                           self.struct.curve_points, self.struct.cmd_remove_curve,
-                          self.struct.cmd_add_curve, self.struct.cmd_extend_curve)  # fmt: skip
+                          self.struct.cmd_add_curve, self.struct.cmd_extend_curve,
+                          self.struct.surface_point)  # fmt: skip
 
     def _guard(self, fn, default):
         def wrapped(*args):
@@ -587,6 +595,46 @@ class _Host:
         if dist > max_dist:
             return 0
         return self._fill_hit(out, tris[k], faces[k], q[k], w[k], dist, A[k], B[k], C[k])
+
+    def _area_cdf(self, inp):
+        """Cumulative triangle areas (twice the area, in double, summed in order), as the node."""
+        data = self._tris_of(inp)  # Takes the lock itself (it isn't reentrant).
+        with self.lock:
+            key = ("cdf", inp)
+            if key not in self._topology:
+                if data is None:
+                    self._topology[key] = None
+                else:
+                    _tris, _faces, A, B, C = data  # float64 copies of the float32 positions
+                    e1, e2 = B - A, C - A
+                    cx = e1[:, 1] * e2[:, 2] - e1[:, 2] * e2[:, 1]
+                    cy = e1[:, 2] * e2[:, 0] - e1[:, 0] * e2[:, 2]
+                    cz = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
+                    area = np.sqrt(cx * cx + cy * cy + cz * cz)
+                    cdf = np.zeros(len(area))
+                    total = 0.0
+                    for k, a in enumerate(area):  # Sequential, like the node.
+                        total += float(a)
+                        cdf[k] = total
+                    self._topology[key] = cdf
+            return self._topology[key]
+
+    def _surface_point(self, _self, inp, u, v, w, out):
+        """A point on the input's triangles, area weighted; same arithmetic as the node."""
+        cdf = self._area_cdf(inp)
+        if cdf is None or not cdf[-1] > 0.0:
+            return 0
+        tris, faces, A, B, C = self._tris_of(inp)
+        k = min(int(np.searchsorted(cdf, float(np.float32(u)) * cdf[-1], side="right")), len(cdf) - 1)
+        f32 = np.float32
+        v, w = f32(v), f32(w)
+        if v + w > f32(1):
+            v, w = f32(1) - v, f32(1) - w
+        b0 = f32(1) - v - w
+        P = np.asarray(self._input(inp).points["position"], np.float32)
+        a, b, c = P[tris[k, 0]], P[tris[k, 1]], P[tris[k, 2]]
+        pos = a * b0 + b * v + c * w
+        return self._fill_hit(out, tris[k], faces[k], pos, (b0, v, w), 0.0, A[k], B[k], C[k])
 
     def _set_attr(self, _self, cmd, src, attr, elem, value):
         size = self.attr_sizes[attr]
