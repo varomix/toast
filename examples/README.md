@@ -21,6 +21,8 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
 | [12_sketch](12_sketch.blend) | A Grease Pencil drawing that grows hairs and boils like hand-drawn animation | Toast on Grease Pencil: Run Over Geometry draws new strokes into each layer (`add_curve`), Run Over Points jitters every stroke point and its `@radius` |
 | [13_fountain](13_fountain.blend) | Sparks born on a turning monkey, bouncing on the floor | Particles: emission with `random_surface_point` on Input 1 (Run Over Geometry), gravity, bounce and death by age (Run Over Points) in a Simulation Zone |
 | [14_smoke](14_smoke.blend) | A plume of smoke rising and curling, in a grid that follows it | Volumes: Run Over Voxels, grids as `@density`/`@velocity`, `sample_grid` for advection, `grid_voxel` for neighbors, a pressure solve in a Repeat Zone, vorticity confinement, `activate_voxel`/`deactivate_voxel` so the grid follows the smoke; rendered in Cycles |
+| [15_smoke_trails](15_smoke_trails.blend) | Comets leaving smoke that swirls and fades | Points switching voxels on (`voxel_at`, `activate_voxel` in Run Over Points), a Voxels node filling them from the comets on Input 1, neighbors by `grid_voxel(@voxel ± 1)` (arrays), a grid that starts as one voxel and follows the smoke |
+| [16_crawlers](16_crawlers.blend) | Glowing trails crawling over Suzanne | A signed distance grid from Mesh to SDF Grid on Input 1 of Run Over Curves: `grid_gradient` as the surface normal, `sample_grid` to step back onto the surface, `extend_curve` trails, `random_surface_point` seeds |
 
 <p>
   <img src="images/01_flocking.png" width="32%">
@@ -41,6 +43,10 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
 <p>
   <img src="images/06_mandelbulb.png" width="40%">
   <img src="images/14_smoke.png" width="40%">
+</p>
+<p>
+  <img src="images/15_smoke_trails.png" width="40%">
+  <img src="images/16_crawlers.png" width="40%">
 </p>
 
 ## How far it goes
@@ -64,6 +70,8 @@ included, measured with `run_examples.py` below. Default settings first, then sc
 | Trails\* | 1200 curves x 48 points | 1.0 | 20000 curves x 120 points (2.4 million) | 12 |
 | Fountain\* | 250 per frame, ~18000 alive | 1.1 | 4000 per frame, ~286000 alive | 3.1 |
 | Smoke\* | voxels of 1/32 following the smoke, 28 passes per frame | 124 (170 at frame 200) | voxels of 1/64 (8 times as many) | 1440 (up to 3500) |
+| Smoke trails\* | 5 comets | 8 (10 at frame 120) | 40 comets | 91 (153 at frame 120) |
+| Crawlers\* | 1500 crawlers x 60 points | 47 (mostly Mesh to SDF Grid, every frame) | 15000 crawlers (900000 points) | 52 |
 
 \* Measured on an Apple M3 Max (14 cores, built-in compiler) instead.
 

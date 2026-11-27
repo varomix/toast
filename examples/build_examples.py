@@ -1130,6 +1130,175 @@ def smoke():
     save("14_smoke")
 
 
+def glow_material(name, color, strength):
+    """A plain emitting material."""
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes["Principled BSDF"]
+    bsdf.inputs["Base Color"].default_value = (0, 0, 0, 1)
+    bsdf.inputs["Emission Color"].default_value = (*color, 1)
+    bsdf.inputs["Emission Strength"].default_value = strength
+    return mat
+
+
+def smoke_trails():
+    new_file(240)
+    obj = mesh_object("Smoke trails")
+    t = Tree(obj, "Smoke trails")
+    # Five comets, placed by the time (outside the Simulation Zone).
+    pts = t.node("GeometryNodePoints", (-200, -400), Count=5)
+    comets = t.toast("smoke_trails/comets", (0, -400))
+    t.link(pts.outputs[0], comets.inputs["Geometry"])
+    # The volume starts as one voxel of 1/32 (the grids' voxel size); the comets add the rest.
+    topo = t.node("GeometryNodeCubeGridTopology", (-400, 0), **{
+        "Bounds Min": (0.0, 0.0, 0.0), "Bounds Max": (0.03125, 0.03125, 0.03125),
+        "Resolution X": 1, "Resolution Y": 1, "Resolution Z": 1})  # fmt: skip
+    store = t.node("GeometryNodeStoreNamedGrid", (-200, 0), Name="seed")
+    store.data_type = "BOOLEAN"
+    t.link(topo.outputs[0], store.inputs["Grid"])
+    setup = t.toast("smoke_trails/setup", (0, 0))
+    t.link(store.outputs[0], setup.inputs["Geometry"])
+    sin, sout = t.sim_zone(250, 1450)
+    t.link(setup.outputs[0], sin.inputs["Geometry"])
+    join = t.node("GeometryNodeJoinGeometry", (450, 0))
+    t.link(sin.outputs["Geometry"], join.inputs[0])
+    t.link(comets.outputs[0], join.inputs[0])
+    emit = t.toast("smoke_trails/emit", (650, 0))
+    t.link(join.outputs[0], emit.inputs["Geometry"])
+    sep = t.node("GeometryNodeSeparateComponents", (900, 0))
+    t.link(emit.outputs[0], sep.inputs[0])
+    step = t.toast("smoke_trails/step", (1150, 0))
+    t.link(sep.outputs["Volume"], step.inputs["Geometry"])
+    t.link(comets.outputs[0], step.inputs["Input 1"])
+    t.link(sin.outputs["Delta Time"], step.inputs["delta_time"])
+    t.link(step.outputs[0], sout.inputs["Geometry"])
+    smoke = t.node("GeometryNodeSetMaterial", (1650, 0))
+    smoke.inputs["Material"].default_value = volume_material("Trail smoke", color=(0.85, 0.85, 0.9), density=20.0)
+    t.link(sout.outputs["Geometry"], smoke.inputs["Geometry"])
+    # The comets' heads: small glowing spheres.
+    ico = t.node("GeometryNodeMeshIcoSphere", (1450, -550), Radius=0.05, Subdivisions=2)
+    heads = t.node("GeometryNodeInstanceOnPoints", (1650, -400))
+    t.link(comets.outputs[0], heads.inputs["Points"])
+    t.link(ico.outputs["Mesh"], heads.inputs["Instance"])
+    head_mat = t.node("GeometryNodeSetMaterial", (1850, -400))
+    head_mat.inputs["Material"].default_value = glow_material("Comet", (1.0, 0.6, 0.25), 40.0)
+    t.link(heads.outputs[0], head_mat.inputs["Geometry"])
+    out = t.node("GeometryNodeJoinGeometry", (2050, 0))
+    t.link(smoke.outputs[0], out.inputs[0])
+    t.link(head_mat.outputs[0], out.inputs[0])
+    t.finish(out.outputs[0], 2250)
+    obj.data.materials.append(smoke.inputs["Material"].default_value)
+    obj.data.materials.append(head_mat.inputs["Material"].default_value)
+
+    bpy.ops.mesh.primitive_plane_add(size=30)
+    bpy.context.active_object.data.materials.append(material("Floor", color=(0.02, 0.02, 0.025), roughness=0.8))
+    camera((0, -7.5, 2.6), (0, 0, 1.6), lens=35)
+    scene = bpy.context.scene
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 64
+    scene.cycles.use_denoising = True
+    scene.cycles.volume_step_rate = 0.5
+    light("SUN", (0, 0, 10), 2.5, rotation=(45, 0, 30), size=2, color=(1.0, 0.93, 0.85))
+    rim = light("AREA", (2.0, 4.0, 4.0), 500, size=4, color=(0.5, 0.65, 1.0))
+    rim.rotation_euler = (mathutils.Vector((0, 0, 1.5)) - rim.location).to_track_quat("-Z", "Y").to_euler()
+    note([
+        "Smoke trails: five comets leave smoke that swirls and fades. Press Play.",
+        "",
+        "comets.py  (Points)   each comet's place on its loop, from the time; @prev a frame ago",
+        "setup.py   (Voxels)   the grids, on a single voxel of 1/32",
+        "In the Simulation Zone, with the comets joined to the volume:",
+        "emit.py    (Points)   each comet switches on voxels along its path: voxel_at() finds the",
+        "                      voxel at a position, activate_voxel() adds it to every grid",
+        "step.py    (Voxels)   the smoke drifts (sample_grid), spreads to its six neighbors",
+        "                      (grid_voxel at @voxel + one step: read from arrays), gets new smoke",
+        "                      along each comet's segment (Input 1), and the grid follows the",
+        "                      smoke (activate_voxel / deactivate_voxel)",
+        "",
+        "Try: trail_radius, spread, swirl, fade, more comets (the Points node's Count).",
+    ])
+    save("15_smoke_trails")
+
+
+def crawlers():
+    new_file(300)
+    bpy.ops.mesh.primitive_monkey_add(size=1.6, location=(0, 0, 1.2))
+    monkey = bpy.context.active_object
+    monkey.name = "Shape"
+    # Remeshed so it is closed (an SDF needs an inside), then smooth.
+    remesh = monkey.modifiers.new("Remesh", "REMESH")
+    remesh.mode = "VOXEL"
+    remesh.voxel_size = 0.02
+    remesh.use_smooth_shade = True
+    bpy.ops.object.shade_smooth()
+    monkey.data.materials.append(material("Shape", color=(0.18, 0.18, 0.2), roughness=0.5))
+
+    obj = bpy.data.objects.new("Crawlers", bpy.data.hair_curves.new("Crawlers"))
+    bpy.context.scene.collection.objects.link(obj)
+    t = Tree(obj, "Crawlers")
+    info = t.node("GeometryNodeObjectInfo", (-300, -300))
+    info.inputs["Object"].default_value = monkey
+    info.transform_space = "RELATIVE"
+    seed = t.toast("crawlers/seed", (0, 0))
+    t.link(t.input.outputs[0], seed.inputs["Geometry"])
+    t.link(info.outputs["Geometry"], seed.inputs["Input 1"])
+    # The shape as a signed distance grid: negative inside, positive outside.
+    sdf = t.node("GeometryNodeMeshToSDFGrid", (0, -300), **{"Voxel Size": 0.015, "Band Width": 4})
+    t.link(info.outputs["Geometry"], sdf.inputs["Mesh"])
+    store = t.node("GeometryNodeStoreNamedGrid", (200, -300), Name="sdf")
+    t.link(sdf.outputs[0], store.inputs["Grid"])
+    sin, sout = t.sim_zone(250, 700)
+    crawl = t.toast("crawlers/crawl", (450, 0))
+    t.link(seed.outputs[0], sin.inputs["Geometry"])
+    t.link(sin.outputs["Geometry"], crawl.inputs["Geometry"])
+    t.link(store.outputs[0], crawl.inputs["Input 1"])
+    t.link(crawl.outputs[0], sout.inputs["Geometry"])
+    param = t.node("GeometryNodeSplineParameter", (750, -300))
+    radius = t.node("ShaderNodeMath", (950, -300), label="Radius")
+    radius.operation = "MULTIPLY"
+    radius.inputs[1].default_value = 0.016
+    t.link(param.outputs["Factor"], radius.inputs[0])
+    set_radius = t.node("GeometryNodeSetCurveRadius", (950, 0))
+    t.link(sout.outputs["Geometry"], set_radius.inputs["Curve"])
+    t.link(radius.outputs[0], set_radius.inputs["Radius"])
+    mat = bpy.data.materials.new("Crawler")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = nt.nodes["Principled BSDF"]
+    bsdf.inputs["Base Color"].default_value = (0, 0, 0, 1)
+    bsdf.inputs["Emission Strength"].default_value = 6.0
+    hue = nt.nodes.new("ShaderNodeAttribute")
+    hue.attribute_name = "hue"
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    els = ramp.color_ramp.elements
+    els[0].color = (1.0, 0.45, 0.05, 1)
+    els[1].color = (0.15, 0.9, 1.0, 1)
+    nt.links.new(hue.outputs["Fac"], ramp.inputs["Fac"])
+    nt.links.new(ramp.outputs["Color"], bsdf.inputs["Emission Color"])
+    setmat = t.node("GeometryNodeSetMaterial", (1150, 0))
+    setmat.inputs["Material"].default_value = mat
+    t.link(set_radius.outputs[0], setmat.inputs["Geometry"])
+    t.finish(setmat.outputs[0], 1350)
+    obj.data.materials.append(mat)
+
+    bpy.context.scene.world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.01, 0.01, 0.015, 1)
+    camera((2.2, -5.2, 2.4), (0, 0, 1.15), lens=50)
+    light("AREA", (-2, -3, 4), 200, rotation=(35, 0, -30), size=3)
+    note([
+        "Crawlers: 1500 glowing trails crawling over Suzanne's surface. Press Play.",
+        "",
+        "Mesh to SDF Grid turns the shape into a signed distance grid \"sdf\" (Input 1 of crawl.py).",
+        "seed.py   (Geometry)  one curve per crawler at random_surface_point() on the shape",
+        "crawl.py  (Curves)    in the Simulation Zone: the tip moves along curl noise with the",
+        "                      part off the surface removed (grid_gradient = the normal), then",
+        "                      steps back onto it by sample_grid(); extend_curve() adds the",
+        "                      new tip, the oldest point goes (remove_point)",
+        "",
+        "Try: count, speed, scale, trail; sculpt the Shape or swap it for another closed mesh.",
+    ])
+    save("16_crawlers")
+
+
+
 EXAMPLES = {
     "flocking": flocking,
     "reaction_diffusion": reaction_diffusion,
@@ -1145,6 +1314,8 @@ EXAMPLES = {
     "sketch": sketch,
     "fountain": fountain,
     "smoke": smoke,
+    "smoke_trails": smoke_trails,
+    "crawlers": crawlers,
 }
 
 if __name__ == "__main__":
