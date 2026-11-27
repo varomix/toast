@@ -215,13 +215,16 @@ Cycles sync makes a `ToastNode` (sockets per node, like OSL's) wired to Geometry
 Coordinate, Attribute, Color Attribute and Scene Time nodes, and SVM's `NODE_TOAST` calls the
 function by its address (CPU only; other devices write zeros).
 
-Cycles Metal (0.22): the sync also gives each `ToastNode` its EEVEE function plus a wrapper
-taking the packed floats. Before loading kernels, `Scene::device_update` collects the scene's
-functions (`ToastNode::scene_source`: sorted, numbered, a `toast_dispatch(id, in, out)` switch,
-in namespace `toast_metal`) and passes them to `Device::set_toast_source`; Metal puts them
-before the kernel source, so new functions change the kernels' hash and build new kernels
-(minutes; cached after). `NODE_TOAST` calls `toast_dispatch` when `__TOAST_FUNCTIONS__` is
-defined.
+Cycles Metal (0.22, linked since 0.23): the sync also gives each `ToastNode` its EEVEE function
+plus a wrapper taking the packed floats. Before loading kernels, `Scene::device_update` collects
+the scene's functions (`ToastNode::scene_source`: sorted, numbered, in namespace `toast_metal`,
+each exported as a `[[visible]]` function) and passes them to `Device::set_toast_functions`.
+Metal compiles them as a small library of its own (milliseconds). A scene with Toast nodes gets
+kernels built once with `__TOAST_NODES__` (a few minutes the first time, then cached), whose
+pipelines accept added binary functions; `MetalDispatchPipeline::update` links the current
+functions in (`newComputePipelineStateWithAdditionalBinaryFunctions`) and fills a visible
+function table that `NODE_TOAST` calls through (`MetalAncillaries::ft_toast`). New Toast code
+only re-links: no kernel is built.
 
 ## Measurements (2026-11-24, 32 threads, g++ 14, fork 5.3)
 
