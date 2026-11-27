@@ -26,7 +26,7 @@ vec3), `@voxel` and `@voxel_size`; `sample_grid()`, `grid_voxel()` and `grid_gra
 grids from any mode; `activate_voxel()`/`deactivate_voxel()` change which voxels exist (kernel
 ABI 10, 0.19), in any mode with `voxel_at()`. Neighbor reads at `@voxel` plus or minus one step
 read arrays. Volumes from VDB files work (tested with a file that has a tile). The smoke example
-uses it all. Still to do:
+uses it all, and the fire example adds combustion (17_fire). Still to do:
 
 - The node rebuilds the neighbor tables for every Toast node, also for each pass of a Repeat
   Zone over the same voxels; keeping them while the voxels don't change would save most of
@@ -81,5 +81,4 @@ what it would show off and what it needs that Toast doesn't have yet, if anythin
 | **Diffusion-limited aggregation** (lightning, frost) | `nearest_point` on a growing cloud, Run Over Geometry, `add_curve` strokes | Nothing new |
 | **Ivy crawling over a statue** | `extend_curve` growth, `closest_point` + `ray_cast` to stay on the surface, leaves as instances (`@transform`, `mat4`) | Nothing new |
 | **Strange attractors** drawn as long strands | Heavy math per step, `extend_curve` histories | Nothing new |
-| **Fire**: the smoke example with temperature, burning fuel and emission | A temperature grid, Blackbody in the material | Nothing new |
 | **Level set** that grows or erodes a shape | Run Over Voxels on an SDF from Mesh to SDF Grid, `grid_gradient` | Nothing new |

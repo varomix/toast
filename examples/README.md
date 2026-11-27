@@ -23,6 +23,7 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
 | [14_smoke](14_smoke.blend) | A plume of smoke rising and curling, in a grid that follows it | Volumes: Run Over Voxels, grids as `@density`/`@velocity`, `sample_grid` for advection, `grid_voxel` for neighbors, a pressure solve in a Repeat Zone, vorticity confinement, `activate_voxel`/`deactivate_voxel` so the grid follows the smoke; rendered in Cycles |
 | [15_smoke_trails](15_smoke_trails.blend) | Comets leaving smoke that swirls and fades | Points switching voxels on (`voxel_at`, `activate_voxel` in Run Over Points), a Voxels node filling them from the comets on Input 1, neighbors by `grid_voxel(@voxel ± 1)` (arrays), a grid that starts as one voxel and follows the smoke |
 | [16_crawlers](16_crawlers.blend) | Glowing trails crawling over Suzanne | A signed distance grid from Mesh to SDF Grid on Input 1 of Run Over Curves: `grid_gradient` as the surface normal, `sample_grid` to step back onto the surface, `extend_curve` trails, `random_surface_point` seeds |
+| [17_fire](17_fire.blend) | Flames from a flickering burner, cooling into smoke | The smoke example with combustion: `@fuel`, `@temperature` and `@flame` grids, fuel that burns above an ignition temperature, burning gas that expands (the divergence), blackbody light from the temperature grid in a Principled Volume; reuses three of the smoke's Toast files |
 
 <p>
   <img src="images/01_flocking.png" width="32%">
@@ -48,6 +49,9 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
   <img src="images/15_smoke_trails.png" width="40%">
   <img src="images/16_crawlers.png" width="40%">
 </p>
+<p>
+  <img src="images/17_fire.png" width="40%">
+</p>
 
 ## How far it goes
 
@@ -72,6 +76,7 @@ included, measured with `run_examples.py` below. Default settings first, then sc
 | Smoke\* | voxels of 1/32 following the smoke, 28 passes per frame | 124 (170 at frame 200) | voxels of 1/64 (8 times as many) | 1440 (up to 3500) |
 | Smoke trails\* | 5 comets | 8 (10 at frame 120) | 40 comets | 91 (153 at frame 120) |
 | Crawlers\* | 1500 crawlers x 60 points | 47 (mostly Mesh to SDF Grid, every frame) | 15000 crawlers (900000 points) | 52 |
+| Fire\* | voxels of 1/32 following the fire, 28 passes per frame | 190 (155 at frame 120) | voxels of 1/64 (8 times as many) | 1500 (up to 2900) |
 
 \* Measured on an Apple M3 Max (14 cores, built-in compiler) instead.
 

@@ -1299,6 +1299,96 @@ def crawlers():
 
 
 
+def fire_material(name):
+    """Principled Volume: smoke from "density", light from "temperature" (blackbody)."""
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.remove(nt.nodes["Principled BSDF"])
+    vol = nt.nodes.new("ShaderNodeVolumePrincipled")
+    vol.location = (-300, 0)
+    vol.inputs["Color"].default_value = (0.25, 0.24, 0.23, 1)
+    vol.inputs["Density"].default_value = 8.0
+    vol.inputs["Blackbody Intensity"].default_value = 1.0
+    vol.inputs["Temperature Attribute"].default_value = "temperature"
+    # Cycles multiplies the attribute by this: temperature 1 glows at 2100 K, cooler gas goes
+    # red and dark (blackbody light grows with the fourth power of the temperature).
+    vol.inputs["Temperature"].default_value = 2100.0
+    nt.links.new(vol.outputs[0], nt.nodes["Material Output"].inputs["Volume"])
+    return mat
+
+
+def fire():
+    new_file(200)
+    obj = mesh_object("Fire")
+    t = Tree(obj, "Fire")
+    # A first box of 32^3 voxels of 1/32 over the burner; the grid follows the fire from there.
+    topo = t.node("GeometryNodeCubeGridTopology", (-200, 0), **{
+        "Bounds Min": (-0.5, -0.5, 0.0), "Bounds Max": (0.5, 0.5, 1.0),
+        "Resolution X": 32, "Resolution Y": 32, "Resolution Z": 32})  # fmt: skip
+    store = t.node("GeometryNodeStoreNamedGrid", (0, 0), Name="box")
+    store.data_type = "BOOLEAN"
+    t.link(topo.outputs[0], store.inputs["Grid"])
+    setup = t.toast("fire/setup", (200, 0))
+    t.link(store.outputs[0], setup.inputs["Geometry"])
+    sin, sout = t.sim_zone(450, 1900)
+    vort = t.toast("smoke/vorticity", (650, 250))
+    step = t.toast("fire/step", (650, 0))
+    div = t.toast("fire/divergence", (900, 0))
+    rin, rout = t.repeat_zone(1150, 1650, 24)
+    rin.label = "Pressure iterations"
+    pressure = t.toast("smoke/pressure", (1400, 0))
+    project = t.toast("smoke/project", (1750, -250))
+    t.link(setup.outputs[0], sin.inputs["Geometry"])
+    t.link(sin.outputs["Geometry"], vort.inputs["Geometry"])
+    t.link(vort.outputs[0], step.inputs["Geometry"])
+    t.link(sin.outputs["Delta Time"], step.inputs["delta_time"])
+    t.link(step.outputs[0], div.inputs["Geometry"])
+    t.link(div.outputs[0], rin.inputs["Geometry"])
+    t.link(rin.outputs["Geometry"], pressure.inputs["Geometry"])
+    t.link(pressure.outputs[0], rout.inputs["Geometry"])
+    t.link(rout.outputs["Geometry"], project.inputs["Geometry"])
+    t.link(project.outputs[0], sout.inputs["Geometry"])
+    setmat = t.node("GeometryNodeSetMaterial", (2100, 0))
+    setmat.inputs["Material"].default_value = fire_material("Fire")
+    t.link(sout.outputs["Geometry"], setmat.inputs["Geometry"])
+    t.finish(setmat.outputs[0], 2300)
+    obj.data.materials.append(setmat.inputs["Material"].default_value)
+
+    bpy.ops.mesh.primitive_plane_add(size=30)
+    bpy.context.active_object.data.materials.append(material("Floor", color=(0.05, 0.05, 0.06), roughness=0.6))
+    camera((0, -10.0, 1.6), (0, 0, 1.9), lens=40)
+    scene = bpy.context.scene
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 64
+    scene.cycles.use_denoising = True
+    scene.cycles.volume_step_rate = 0.5
+    scene.world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.006, 0.006, 0.01, 1)
+    light("SUN", (0, 0, 10), 0.3, rotation=(40, 0, 35), size=2, color=(0.6, 0.7, 1.0))
+    note([
+        "Fire: flames from a burner, turning to smoke as they cool. Press Play.",
+        "",
+        "The smoke example plus combustion: grids for fuel, temperature and flame. The material",
+        "is a Principled Volume with blackbody light from the temperature grid.",
+        "",
+        "setup.py       (Voxels)  empty grids",
+        "In the Simulation Zone:",
+        "vorticity.py   (Voxels)  how fast the gas spins (the smoke example's)",
+        "step.py        (Voxels)  advection of fuel, temperature, smoke and velocity; a",
+        "                         flickering burner pours hot fuel; fuel above the ignition",
+        "                         temperature burns: heat, soot, and flame; heat rises and",
+        "                         cools; the grid follows the fire",
+        "divergence.py  (Voxels)  flow out of each voxel, less where fuel burns: burning gas",
+        "                         expands",
+        "pressure.py    (Voxels)  one Jacobi step; the Repeat Zone runs it 24 times",
+        "project.py     (Voxels)  velocity minus the pressure gradient",
+        "",
+        "Try: burn_rate, heat, cooling, ignition, expansion, buoyancy; the material's",
+        "Temperature (brighter, whiter flames).",
+    ])
+    save("17_fire")
+
+
 EXAMPLES = {
     "flocking": flocking,
     "reaction_diffusion": reaction_diffusion,
@@ -1316,6 +1406,7 @@ EXAMPLES = {
     "smoke": smoke,
     "smoke_trails": smoke_trails,
     "crawlers": crawlers,
+    "fire": fire,
 }
 
 if __name__ == "__main__":

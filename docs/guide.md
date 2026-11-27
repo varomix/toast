@@ -557,6 +557,10 @@ back = @position - @velocity * dt
 @velocity = sample_grid(0, "velocity", back) + vec3(0, 0, param("buoyancy", 2.0) * @density * dt)
 ```
 
+The Simulation Zone's Delta Time is 0 on its first frame. Multiplying by it is fine; to divide by
+it (a rate per second, like the fire example's `@flame`), use `max(dt, 1e-4)`, or 0 / 0 makes NaN
+that stays in the grids.
+
 ### A grid that follows the smoke (Run Over: Voxels)
 
 At the end of a smoke step: voxels with smoke keep three voxels around them, empty ones go. The
