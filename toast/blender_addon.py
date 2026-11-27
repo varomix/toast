@@ -28,7 +28,7 @@ from pathlib import Path
 import bpy
 import bpy.utils.previews
 
-from .build import build, build_source, cache_dir
+from .build import build, build_shader_cpu, build_source, cache_dir
 from .compiler import LIB_PACKAGE, collect_libraries
 from .errors import ToastBuildError, ToastError
 from .libraries import file_resolver, library_dirs
@@ -54,7 +54,7 @@ n = noise(@position * param("freq", 4.0))
 @height: float = n
 '''
 
-NEW_SHADER_TEXT = '''# Toast shader: runs for every shading point (EEVEE).
+NEW_SHADER_TEXT = '''# Toast shader: runs for every shading point (EEVEE, Cycles on the CPU).
 # @position, @uv, @generated... are the shading point's; param() makes an input socket,
 # output() an output socket. Connect the outputs to a shader.
 scale = param("scale", 5.0)
@@ -205,11 +205,18 @@ def _compile_shader_node(node, source, libs, source_hash):
         _assign(node, error=f"{text_name}: {ex}", source_hash=source_hash)
         _status[key] = ("error", "")
         return
+    # Cycles (CPU) compiles the C++ when it renders: here it only goes to the cache.
+    try:
+        kernel_path = str(build_shader_cpu(result.cpu, backend()))
+    except ToastBuildError as ex:
+        print(f"Toast: {ex}")
+        kernel_path = ""
     seconds = time.perf_counter() - start
-    _status[key] = ("ok", f"translated in {seconds * 1000:.0f} ms, compiled by EEVEE")
+    _status[key] = ("ok", f"translated in {seconds * 1000:.0f} ms (EEVEE and Cycles CPU)")
     # Signature first: it rebuilds the sockets the function is called with.
     _assign(node, signature=signature_json(result.signature))
-    _assign(node, gpu_source=result.source, error="", source_hash=source_hash)
+    _assign(node, gpu_source=result.source, kernel_path=kernel_path, error="",
+            source_hash=source_hash)  # fmt: skip
 
 
 def _compile_node(node, source, run_over, source_hash, lib_error=None, libs=None):
@@ -218,7 +225,8 @@ def _compile_node(node, source, run_over, source_hash, lib_error=None, libs=None
     shader = is_shader_node(node)
     if not source.strip():
         if shader:
-            _assign(node, signature="", gpu_source="", error="", source_hash=source_hash)
+            _assign(node, signature="", gpu_source="", kernel_path="", error="",
+                    source_hash=source_hash)  # fmt: skip
         else:
             _assign(node, signature="", kernel_path="", error="", source_hash=source_hash)
         _status[key] = ("empty", "")
@@ -277,7 +285,7 @@ def update_node(node, force=False, debounce=True, edits=True):
     # A missing library may appear later (a new text or file): hash the error so it is retried.
     h = _source_hash(source, run_over, libs) + ("" if lib_error is None else "!")
     stale = node.source_hash != h
-    missing = not shader and bool(node.kernel_path) and not os.path.exists(node.kernel_path)
+    missing = bool(node.kernel_path) and not os.path.exists(node.kernel_path)
     key = node.as_pointer()
     if not (force or stale or missing):
         _pending.pop(key, None)
@@ -725,7 +733,7 @@ class NODE_PT_toast(bpy.types.Panel):
         op.tree = node.id_data.name
         op.node = node.name
         if is_shader_node(node):
-            layout.label(text="Runs for every shading point (EEVEE)")
+            layout.label(text="Runs for every shading point (EEVEE, Cycles CPU)")
         else:
             layout.prop(node, "run_over")
         prefs = _prefs()

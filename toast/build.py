@@ -143,7 +143,9 @@ def self_contained(cpp):
     """Generated C++ with toast_rt.h inlined, so a compiler needs no include path."""
     include = '#include "toast_rt.h"'
     assert include in cpp
-    return cpp.replace(include, RUNTIME_HEADER.read_text(), 1)
+    # Without `#pragma once`: in a main file clang warns about it ("1 warning generated").
+    runtime = RUNTIME_HEADER.read_text().replace("#pragma once\n", "", 1)
+    return cpp.replace(include, runtime, 1)
 
 
 def build_source(source, run_over="points", force=False, lib_resolver=None):
@@ -171,3 +173,36 @@ def build_source(source, run_over="points", force=False, lib_resolver=None):
     _write_atomic(cpp_path, self_contained(result.cpp))
     _write_atomic(sig_path, json.dumps(result.signature, indent=1, sort_keys=True))
     return Kernel(key, cpp_path, cpp_path, result.signature, cached=False)
+
+
+def build_shader_cpu(cpp, backend="builtin", cxx=None):
+    """The C++ of a shader node's function for Cycles on the CPU (``ShaderSource.cpu``), cached by
+    its content: a self-contained ``.cpp`` for Blender's built-in compiler, or with the external
+    backend a ``.so``. Returns the path for the node's ``kernel_path``."""
+    parts = {"cpu": cpp, "toast": VERSION, "runtime": _sha256(RUNTIME_HEADER.read_bytes()),
+             "backend": backend}  # fmt: skip
+    if backend != "builtin":
+        cxx = find_compiler(cxx)
+        parts["compiler"] = compiler_id(cxx)
+        parts["flags"] = CXX_FLAGS
+    key = "shader_" + _sha256(json.dumps(parts, sort_keys=True).encode())[:32]
+    d = cache_dir()
+    cpp_path = d / f"{key}.cpp"
+    if backend == "builtin":
+        if not cpp_path.exists():
+            _write_atomic(cpp_path, self_contained(cpp))
+        return cpp_path
+    so_path = d / f"{key}.so"
+    if so_path.exists():
+        return so_path
+    _write_atomic(cpp_path, cpp)
+    fd, tmp_so = tempfile.mkstemp(dir=d, prefix=f".{key}.", suffix=".so")
+    os.close(fd)
+    cmd = [cxx, *CXX_FLAGS, f"-I{RUNTIME_DIR}", str(cpp_path), "-o", tmp_so]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        os.unlink(tmp_so)
+        raise ToastBuildError(f"C++ compile failed (this is a Toast bug, not your code).\n"
+                              f"Source: {cpp_path}\n{proc.stderr}")  # fmt: skip
+    os.replace(tmp_so, so_path)
+    return so_path

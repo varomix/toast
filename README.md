@@ -205,7 +205,15 @@ Euclidean, detail 0, randomness `r`; distance, color and position outputs). Scal
 puts `gpu_source` (the runtime and the function, each in an include guard) into the material's
 generated shader. Built-in inputs come from the Geometry, Texture Coordinate and Scene Time
 library functions; named attributes are passed as float4 and converted by the function (as the
-Attribute node does). Not in Cycles yet; only in trusted files.
+Attribute node does). Only in trusted files.
+
+Cycles (CPU, 0.21): the node also stores `kernel_path`, C++ (`ShaderSource.cpu`, built by
+`build_shader_cpu`) exporting `toast_shader(const float *in, float *out)`: params, then inputs,
+packed as floats in signature order (float/int/bool 1, vec3 3, vec4 4), outputs the same way.
+The fork's `toast_shader_info()` (`NOD_toast.hh`) compiles it with the built-in compiler; the
+Cycles sync makes a `ToastNode` (sockets per node, like OSL's) wired to Geometry, Texture
+Coordinate, Attribute, Color Attribute and Scene Time nodes, and SVM's `NODE_TOAST` calls the
+function by its address (CPU only; other devices write zeros).
 
 ## Measurements (2026-11-24, 32 threads, g++ 14, fork 5.3)
 

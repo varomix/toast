@@ -2386,14 +2386,16 @@ output("c", f(v.color) + vec3(@m))
 
 @unittest.skipUnless(_blender_has_toast_node(), "Blender with GeometryNodeToast not found")
 class TestBlenderShader(unittest.TestCase):
-    """ShaderNodeToast in EEVEE: renders compared with the same values made with Blender's nodes."""
+    """ShaderNodeToast in EEVEE and Cycles (CPU): renders compared with the same values made with
+    Blender's nodes. `r` holds the EEVEE results, `cycles` the Cycles ones."""
 
     @classmethod
     def setUpClass(cls):
         script = Path(__file__).resolve().parent / "blender_shader_check.py"
         cls.out = tempfile.TemporaryDirectory(prefix="toast-shader-")
-        cls.r, cls.logs = {}, ""
-        for flags, extra in ((["--enable-autoexec"], []), ([], ["untrusted"])):
+        cls.r, cls.cycles, cls.logs = {}, {}, ""
+        for flags, extra in ((["--enable-autoexec"], []), ([], ["untrusted"]),
+                             (["--enable-autoexec"], ["cycles"]), ([], ["untrusted", "cycles"])):
             proc = subprocess.run(
                 [BLENDER, "-b", "--factory-startup", *flags, "--python-exit-code", "1",
                  "--python", str(script), "--", cls.out.name, *extra],
@@ -2406,7 +2408,7 @@ class TestBlenderShader(unittest.TestCase):
             cls.logs += proc.stdout
             for ln in lines:
                 r = json.loads(ln)
-                cls.r[r["case"]] = r
+                (cls.cycles if "cycles" in extra else cls.r)[r["case"]] = r
 
     @classmethod
     def tearDownClass(cls):
@@ -2433,4 +2435,18 @@ class TestBlenderShader(unittest.TestCase):
         self.assertIn("'nope' is not a Toast builtin", self.r["error"]["error"])
 
     def test_untrusted_file_doesnt_run_code(self):
-        self.assertEqual(self.r["untrusted"]["max_diff"], 0.0)
+        self.assertFalse(self.r["untrusted"]["ran"])
+        self.assertFalse(self.cycles["untrusted"]["ran"])
+
+    def test_cycles_cpu_matches_blender_nodes(self):
+        # Cycles' noise rounds a little differently from Blender's (which Toast's matches).
+        for case, tolerance in (("generated", 0), ("noise", 1e-6), ("fbm", 1e-6),
+                                ("voronoi_color", 0), ("voronoi_distance", 0), ("attribute", 0),
+                                ("params", 0), ("linked_param", 0), ("helpers_loops", 0),
+                                ("frame", 0), ("two_nodes", 0), ("world", 0), ("bump", 1e-4)):
+            with self.subTest(case=case):
+                self.assertEqual(self.cycles[case]["error"], "")
+                self.assertLessEqual(self.cycles[case]["max_diff"], tolerance)
+        self.assertGreater(self.cycles["bump"]["spread"], 0.1)
+        # A real render, not the outputs' defaults.
+        self.assertGreater(self.cycles["noise"]["mean"], 0.3)

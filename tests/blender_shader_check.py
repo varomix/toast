@@ -6,6 +6,7 @@
 
     blender -b --factory-startup --enable-autoexec --python tests/blender_shader_check.py -- OUT
     blender -b --factory-startup --python tests/blender_shader_check.py -- OUT untrusted
+    (add "cycles" after OUT for Cycles on the CPU)
 
 Renders a plane (seen from above, orthographic, 32x32, one sample) whose material emits the
 Toast node's output, and the same with Blender's own nodes where there is one, and prints one
@@ -22,13 +23,25 @@ import bpy
 addon_utils.enable("toast", default_set=True)
 from toast import blender_addon as ba  # noqa: E402
 
-OUT = Path(sys.argv[sys.argv.index("--") + 1])
+ARGS = sys.argv[sys.argv.index("--") + 1:]
+OUT = Path(ARGS[0])
+# "cycles": render with Cycles on the CPU instead of EEVEE.
+CYCLES = "cycles" in ARGS
 OUT.mkdir(parents=True, exist_ok=True)
 RES = 32
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
-scene.render.engine = "BLENDER_EEVEE"
+if CYCLES:
+    scene.render.engine = "CYCLES"
+    scene.cycles.device = "CPU"
+    scene.cycles.samples = 1
+    scene.cycles.use_denoising = False
+    scene.cycles.pixel_filter_type = "BOX"
+    scene.cycles.filter_width = 0.01
+    scene.cycles.seed = 0
+else:
+    scene.render.engine = "BLENDER_EEVEE"
 scene.render.resolution_x = scene.render.resolution_y = RES
 scene.render.resolution_percentage = 100
 scene.eevee.taa_render_samples = 1
@@ -170,13 +183,15 @@ def constant(rgb):
     return build
 
 
-if "untrusted" in sys.argv[sys.argv.index("--"):]:
-    # Run without --enable-autoexec: the code doesn't run, the outputs are their defaults.
+if "untrusted" in ARGS:
+    # Run without --enable-autoexec: the code doesn't run.
     node = []
     material(lambda nodes, links: (node.append(toast_node(nodes, 'output("c", vec3(0.5))\n')),
                                    node[0].outputs["c"])[1])  # fmt: skip
     px = render()
-    report("untrusted", max_diff=diff(px, [(0.0, 0.0, 0.0, 1.0)] * len(px)), error=node[0].error)
+    # The code would give 0.5; without it the emission gets the outputs' default (EEVEE) or
+    # its own Color (Cycles, which leaves the node out).
+    report("untrusted", ran=diff(px, [(0.5, 0.5, 0.5, 1.0)] * len(px)) < 1e-6, error=node[0].error)
     print("TOASTSHADER done", flush=True)
     sys.exit(0)
 
