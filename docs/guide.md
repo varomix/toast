@@ -607,6 +607,44 @@ for p in face_points(0, @index, 16):
     set_point_attr(p, "touched", @index)
 ```
 
+## Shader node
+
+The shader editor has a Toast node too (Add > Toast > Toast): code that runs for **every shading
+point** and gives values to the material, for patterns and textures drawn with code. It doesn't
+make shaders: connect its outputs to Principled BSDF, Bump, Mix and the other nodes.
+
+```toast shader
+scale = param("scale", 5.0)
+p = @generated * scale
+cell = voronoi(p)
+n = fbm(p, 4.0)
+c = lerp(cell.color, vec3(n), 0.5)
+output("color", vec4(c.x, c.y, c.z, 1.0))
+output("height", n)
+```
+
+- `param()` makes an input socket. Unlike the geometry node, it can be linked to other nodes,
+  so its value can change from point to point.
+- `output(name, value)` makes an output socket: float, int, bool, vec3 (Vector) or vec4 (Color).
+- `@` attributes are what the shading point has, read-only:
+
+| Attribute | Type | Same as |
+| --- | --- | --- |
+| `@position` `@normal` `@true_normal` `@incoming` `@parametric` `@backfacing` | vec3 (backfacing: float) | Geometry node |
+| `@generated` `@uv` `@object` `@camera` `@window` `@reflection` | vec3 | Texture Coordinate node |
+| `@color` | vec3 | Color Attribute node (the active one) |
+| `@time` `@frame` | float | Scene Time node |
+| any other `@name` | float, or as declared: `@name: vec3`, `@name: vec4` | Attribute node (Fac, Vector, Color with its alpha) |
+
+- Math, vectors, `noise`, `signed_noise`, `fbm`, `voronoi`, `hash01`, `random`, `curl_noise`,
+  `def` helpers, libraries, `if`, `while` and `for i in range(...)` work as in the geometry node.
+  `noise`, `fbm` and `voronoi` give exactly the values of the Noise and Voronoi Texture nodes.
+- There is no geometry at a shading point: geometry reads and changes, lists, quat and mat4 are
+  geometry node only.
+- The node feeds Bump like any texture: the code runs again at the offset positions.
+- **EEVEE and the viewport only for now.** In Cycles the node's outputs are their default values.
+- Like the geometry node, the code only runs in trusted files (Auto Run Python Scripts).
+
 ## Errors
 
 Errors name the line, and spellings from earlier Toast versions tell you the new name:
@@ -620,6 +658,7 @@ Errors name the line, and spellings from earlier Toast versions tell you the new
 
 ## Limits
 
+- The shader node works in EEVEE and the viewport, not yet in Cycles.
 - Meshes, point clouds, curves, instances, Grease Pencil and volumes (grids of float, int, bool
   and vec3; Run Over Voxels and `sample_grid()`).
 - Run Over Instances changes the instances of the top-level geometry only, like Blender's

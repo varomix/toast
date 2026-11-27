@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 import toast  # noqa: E402
 from toast.harness import Geometry, run  # noqa: E402
+from toast.shader import compile_shader  # noqa: E402
 
 BLOCK_RE = re.compile(r"```toast( (\w+))?\n(.*?)```", re.S)
 
@@ -42,7 +43,10 @@ class TestGuide(unittest.TestCase):
         self.assertGreaterEqual(len(found), 12)
         for run_over, code in found:
             with self.subTest(code=code.splitlines()[0]):
-                toast.compile_source(code, run_over=run_over)
+                if run_over == "shader":
+                    compile_shader(code)
+                else:
+                    toast.compile_source(code, run_over=run_over)
 
     def test_html_guide_is_up_to_date(self):
         import subprocess
@@ -76,7 +80,10 @@ class TestGuide(unittest.TestCase):
             self.assertEqual(len(header), 1, path.name)
             run_over = header[0].split(":", 1)[1].strip().upper().replace("FACE ", "")
             with self.subTest(template=path.name):
-                toast.compile_source(text, run_over=run_over.lower())
+                if run_over == "SHADER":
+                    compile_shader(text)
+                else:
+                    toast.compile_source(text, run_over=run_over.lower())
 
     def test_grid_recipe(self):
         code = next(c for r, c in blocks() if r == "geometry")

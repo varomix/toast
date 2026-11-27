@@ -9,6 +9,9 @@ each Toast node, compiles the code when it changes (debounced while typing), and
 result into the node: ``signature`` (sockets), ``kernel_path`` and ``error``. On load it also
 rebuilds kernels missing from this machine's cache.
 
+``ShaderNodeToast`` (shader editor) works the same way, with ``gpu_source`` (a shader function,
+see ``shader.py``) instead of a kernel.
+
 Compiling is safe on untrusted files: generated C++ only contains constants and identifiers
 from the code. Loading and running a kernel is gated in C++ by Auto Run Python Scripts.
 """
@@ -29,9 +32,12 @@ from .build import build, build_source, cache_dir
 from .compiler import LIB_PACKAGE, collect_libraries
 from .errors import ToastBuildError, ToastError
 from .libraries import file_resolver, library_dirs
+from .shader import compile_shader, signature_json
 from .version import VERSION
 
 NODE_IDNAME = "GeometryNodeToast"
+SHADER_IDNAME = "ShaderNodeToast"
+TOAST_IDNAMES = (NODE_IDNAME, SHADER_IDNAME)
 # The node's Run Over items and the compiler's names.
 RUN_OVER = {"POINTS": "points", "FACES": "faces", "EDGES": "edges", "CORNERS": "corners",
             "CURVES": "curves", "INSTANCES": "instances", "VOXELS": "voxels",
@@ -46,6 +52,17 @@ amp = param("amp", 0.2)
 n = noise(@position * param("freq", 4.0))
 @position += @normal * n * amp
 @height: float = n
+'''
+
+NEW_SHADER_TEXT = '''# Toast shader: runs for every shading point (EEVEE).
+# @position, @uv, @generated... are the shading point's; param() makes an input socket,
+# output() an output socket. Connect the outputs to a shader.
+scale = param("scale", 5.0)
+n = fbm(@generated * scale, 4.0)
+cell = voronoi(@generated * scale)
+c = lerp(cell.color, vec3(n), 0.5)
+output("color", vec4(c.x, c.y, c.z, 1.0))
+output("height", n)
 '''
 
 # node pointer -> (source hash, time first seen)
@@ -125,6 +142,18 @@ def _source_hash(source, run_over, libs):
     return hashlib.sha256(data).hexdigest()[:32]
 
 
+def _shader_trees():
+    """Shader node trees that can hold Toast nodes: groups, and those of materials, worlds and
+    lights (embedded, not in bpy.data.node_groups)."""
+    for tree in bpy.data.node_groups:
+        if tree.bl_idname == "ShaderNodeTree" and tree.library is None:
+            yield tree
+    for ids in (bpy.data.materials, bpy.data.worlds, bpy.data.lights):
+        for owner in ids:
+            if owner.library is None and getattr(owner, "node_tree", None) is not None:
+                yield owner.node_tree
+
+
 def _toast_nodes():
     for tree in bpy.data.node_groups:
         if tree.bl_idname != "GeometryNodeTree" or tree.library is not None:
@@ -132,6 +161,30 @@ def _toast_nodes():
         for node in tree.nodes:
             if node.bl_idname == NODE_IDNAME:
                 yield node
+    for tree in _shader_trees():
+        for node in tree.nodes:
+            if node.bl_idname == SHADER_IDNAME:
+                yield node
+
+
+def is_shader_node(node):
+    return node.bl_idname == SHADER_IDNAME
+
+
+def _find_node(context, tree_name, node_name):
+    """A Toast node by tree and node name. Material trees all have the same name, so the node
+    editor's tree comes first."""
+    space = context.space_data
+    tree = getattr(space, "edit_tree", None)
+    trees = [tree] if tree is not None and tree.name == tree_name else []
+    if tree_name in bpy.data.node_groups:
+        trees.append(bpy.data.node_groups[tree_name])
+    trees += [t for t in _shader_trees() if t.name == tree_name]
+    for t in trees:
+        node = t.nodes.get(node_name)
+        if node is not None and node.bl_idname in TOAST_IDNAMES:
+            return node
+    return None
 
 
 def _assign(node, **values):
@@ -141,16 +194,41 @@ def _assign(node, **values):
             setattr(node, key, value)
 
 
-def _compile_node(node, source, run_over, source_hash, lib_error=None):
+def _compile_shader_node(node, source, libs, source_hash):
     text_name = node.text.name if node.text else ""
     key = node.as_pointer()
+    start = time.perf_counter()
+    try:
+        result = compile_shader(source, libs)
+    except ToastError as ex:
+        # Keep the previous signature so sockets and their links survive while editing.
+        _assign(node, error=f"{text_name}: {ex}", source_hash=source_hash)
+        _status[key] = ("error", "")
+        return
+    seconds = time.perf_counter() - start
+    _status[key] = ("ok", f"translated in {seconds * 1000:.0f} ms, compiled by EEVEE")
+    # Signature first: it rebuilds the sockets the function is called with.
+    _assign(node, signature=signature_json(result.signature))
+    _assign(node, gpu_source=result.source, error="", source_hash=source_hash)
+
+
+def _compile_node(node, source, run_over, source_hash, lib_error=None, libs=None):
+    text_name = node.text.name if node.text else ""
+    key = node.as_pointer()
+    shader = is_shader_node(node)
     if not source.strip():
-        _assign(node, signature="", kernel_path="", error="", source_hash=source_hash)
+        if shader:
+            _assign(node, signature="", gpu_source="", error="", source_hash=source_hash)
+        else:
+            _assign(node, signature="", kernel_path="", error="", source_hash=source_hash)
         _status[key] = ("empty", "")
         return
     if lib_error is not None:
         _assign(node, error=f"{text_name}: {lib_error}", source_hash=source_hash)
         _status[key] = ("error", "")
+        return
+    if shader:
+        _compile_shader_node(node, source, libs or {}, source_hash)
         return
     start = time.perf_counter()
     try:
@@ -189,7 +267,8 @@ def update_node(node, force=False, debounce=True, edits=True):
     with kernels from an older Toast). Without ``edits`` (Auto Compile off), changed code is only
     noted, not compiled; a missing kernel is still built, since the node can't run without one."""
     source = node.text.as_string() if node.text else ""
-    run_over = RUN_OVER.get(node.run_over, "points")
+    shader = is_shader_node(node)
+    run_over = "shader" if shader else RUN_OVER.get(node.run_over, "points")
     lib_error = None
     try:
         libs = _libraries(source)
@@ -198,7 +277,7 @@ def update_node(node, force=False, debounce=True, edits=True):
     # A missing library may appear later (a new text or file): hash the error so it is retried.
     h = _source_hash(source, run_over, libs) + ("" if lib_error is None else "!")
     stale = node.source_hash != h
-    missing = bool(node.kernel_path) and not os.path.exists(node.kernel_path)
+    missing = not shader and bool(node.kernel_path) and not os.path.exists(node.kernel_path)
     key = node.as_pointer()
     if not (force or stale or missing):
         _pending.pop(key, None)
@@ -221,7 +300,7 @@ def update_node(node, force=False, debounce=True, edits=True):
             return False
     _pending.pop(key, None)
     _edited.discard(key)
-    _compile_node(node, source, run_over, h, lib_error)
+    _compile_node(node, source, run_over, h, lib_error, libs)
     return True
 
 
@@ -247,7 +326,7 @@ def _follow_active_nodes():
             if area.type == "NODE_EDITOR":
                 tree = area.spaces.active.edit_tree
                 active = tree.nodes.active if tree else None
-                if active is not None and active.bl_idname == NODE_IDNAME and active.select:
+                if active is not None and active.bl_idname in TOAST_IDNAMES and active.select:
                     node = active
                     break
         if node is None or node.text is None:
@@ -303,7 +382,7 @@ def _active_toast_node(context):
     if space is None or space.type != "NODE_EDITOR" or space.edit_tree is None:
         return None
     node = space.edit_tree.nodes.active
-    if node is None or node.bl_idname != NODE_IDNAME:
+    if node is None or node.bl_idname not in TOAST_IDNAMES:
         return None
     return node
 
@@ -380,8 +459,8 @@ class TOAST_OT_new_text(bpy.types.Operator):
 
     def execute(self, context):
         node = _active_toast_node(context)
-        text = bpy.data.texts.new("toast.py")
-        text.write(NEW_TEXT)
+        text = bpy.data.texts.new("toast_shader.py" if is_shader_node(node) else "toast.py")
+        text.write(NEW_SHADER_TEXT if is_shader_node(node) else NEW_TEXT)
         node.text = text
         update_node(node, force=True)
         _show_text(context, text)
@@ -406,9 +485,15 @@ class TOAST_OT_template(bpy.types.Operator):
         text.write((TEMPLATE_DIR / f"{stem}.py").read_text())
         text.cursor_set(0)
         node = _active_toast_node(context)
+        if node is not None and is_shader_node(node) != (run_over == "SHADER"):
+            kind = "shader" if run_over == "SHADER" else "geometry"
+            self.report({"WARNING"}, f"{label} is a {kind} template: the active Toast node "
+                        "can't use it")  # fmt: skip
+            node = None
         if node is not None:
             node.text = text
-            node.run_over = run_over
+            if not is_shader_node(node):
+                node.run_over = run_over
             update_node(node, force=True)
         _show_text(context, text)
         self.report({"INFO"}, f"Toast template: {label}")
@@ -514,9 +599,8 @@ class TOAST_OT_compile_node(bpy.types.Operator):
     node: bpy.props.StringProperty(options={"SKIP_SAVE", "HIDDEN"})
 
     def execute(self, context):
-        tree = bpy.data.node_groups.get(self.tree)
-        node = tree.nodes.get(self.node) if tree else _active_toast_node(context)
-        if node is None or node.bl_idname != NODE_IDNAME:
+        node = _find_node(context, self.tree, self.node) or _active_toast_node(context)
+        if node is None:
             self.report({"WARNING"}, "No Toast node to compile")
             return {"CANCELLED"}
         compiled = update_node(node, debounce=False, edits=True)
@@ -573,8 +657,7 @@ class TOAST_OT_show_error(bpy.types.Operator):
     node: bpy.props.StringProperty(options={"SKIP_SAVE"})
 
     def execute(self, context):
-        tree = bpy.data.node_groups.get(self.tree)
-        node = tree.nodes.get(self.node) if tree else None
+        node = _find_node(context, self.tree, self.node)
         location = error_location(node) if node else None
         if location is None:
             self.report({"WARNING"}, "The error has no line to show")
@@ -609,7 +692,7 @@ def _draw_status(layout, node):
         layout.label(text="Up to date", icon="CHECKMARK")
         if detail:
             layout.label(text=detail, icon="BLANK1")
-    elif node.kernel_path:
+    elif getattr(node, "kernel_path", "") or getattr(node, "gpu_source", ""):
         layout.label(text="Up to date", icon="CHECKMARK")
     elif node.text is None:
         layout.label(text="No code: pick a text or a template", icon="INFO")
@@ -641,7 +724,10 @@ class NODE_PT_toast(bpy.types.Panel):
                              icon_value=icon_id())  # fmt: skip
         op.tree = node.id_data.name
         op.node = node.name
-        layout.prop(node, "run_over")
+        if is_shader_node(node):
+            layout.label(text="Runs for every shading point (EEVEE)")
+        else:
+            layout.prop(node, "run_over")
         prefs = _prefs()
         if prefs is not None:
             col = layout.column(align=True)
@@ -654,6 +740,11 @@ class NODE_PT_toast(bpy.types.Panel):
             except ValueError:
                 return
             col = layout.column(align=True)
+            for i in sig.get("inputs", []):
+                kind = "" if i["kind"] == "builtin" else " (attribute)"
+                col.label(text=f"{i['type']} @{i['name']}{kind}")
+            for o in sig.get("outputs", []) if is_shader_node(node) else []:
+                col.label(text=f"{o['type']} output: {o['name']}")
             for a in sig.get("attrs", []):
                 if a.get("output"):
                     col.label(text=f"{a['type']} output: {a['name']}")
@@ -697,7 +788,10 @@ class TEXT_PT_toast(bpy.types.Panel):
         for node in nodes:
             box = layout.box()
             box.label(text=f"{node.id_data.name} > {node.name}", icon="NODE")
-            box.label(text=f"Run Over: {node.bl_rna.properties['run_over'].enum_items[node.run_over].name}")
+            if is_shader_node(node):
+                box.label(text="Shader: every shading point")
+            else:
+                box.label(text=f"Run Over: {node.bl_rna.properties['run_over'].enum_items[node.run_over].name}")
             _draw_status(box, node)
         row = layout.row()
         row.operator("toast.compile_text", text=f"Compile ({COMPILE_SHORTCUT})", icon="FILE_REFRESH")

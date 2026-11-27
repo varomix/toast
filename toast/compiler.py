@@ -533,7 +533,7 @@ class Compiler:
             if node.attr not in fields:
                 self.err(f"a {base.type} has no field '.{node.attr}' (it has "
                          f"{', '.join(fields)})", node)  # fmt: skip
-            return E(f"({base.code}).{node.attr}", fields[node.attr])
+            return E(self._field_code(base.code, node.attr), fields[node.attr])
         if base.type in PROPERTIES:
             props = PROPERTIES[base.type]
             if node.attr not in props:
@@ -561,9 +561,30 @@ class Compiler:
             self.err(f"'.{letters}' is out of range for a {base.type}", node)
         if len(comps) == 1:
             return E(f"({base.code}).{'xyzw'[comps[0]]}", FLOAT)
-        n = len(comps)
+        return E(self._swizzle_code(base.code, comps), VECS[len(comps)])
+
+    # Hooks for other targets (see shader.py): the code of a record field, a swizzle of 2 to 4
+    # components, the context arguments of def helpers, a statement that drops a value, and
+    # `return` in the main body.
+
+    @staticmethod
+    def _field_code(base_code, field):
+        return f"({base_code}).{field}"
+
+    @staticmethod
+    def _swizzle_code(base_code, comps):
         args = ", ".join(str(k) for k in comps)
-        return E(f"toast::swz{n}<{args}>({base.code})", VECS[n])
+        return f"toast::swz{len(comps)}<{args}>({base_code})"
+
+    HELPER_ARGS = ("c", "i")
+
+    @staticmethod
+    def _discard_code(code):
+        return f"(void)({code});"
+
+    def _return_main(self):
+        self.uses_return = True  # Ends this element.
+        return "goto toast_next;"
 
     def expr_Subscript(self, node, expect):
         base = self.expr(node.value)
@@ -1776,7 +1797,7 @@ class Compiler:
         if e.type == NONE:
             self.line(f"{e.code};")
         else:
-            self.line(f"(void)({e.code});")
+            self.line(self._discard_code(e.code))
 
     def stmt_Pass(self, s):
         pass
@@ -1915,7 +1936,7 @@ class Compiler:
                 self.err(f"{name}() calls itself: recursion is not supported", node)
             self._compile_helper(fdef, types, key)
         cpp_name, ret = self.helpers[key]
-        return E(f"{cpp_name}({', '.join(['c', 'i'] + args)})", ret)
+        return E(f"{cpp_name}({', '.join(list(self.HELPER_ARGS) + args)})", ret)
 
     def _compile_helper(self, fdef, types, key):
         saved = (self.locals, self.lines, self.depth, self.loop_depth, self.func, self.cur_line,
@@ -1938,6 +1959,12 @@ class Compiler:
             self.compiling.pop()
 
         cpp_name = f"toast_fn_{fdef.name}_{len(self.helper_code)}"
+        self.helper_code.append(
+            self._helper_code(fdef, cpp_name, ret, names, types, body, local_vars, uses_ch))
+        self.helpers[key] = (cpp_name, ret)
+
+    def _helper_code(self, fdef, cpp_name, ret, names, types, body, local_vars, uses_ch):
+        """C++ definition of a compiled def helper."""
         params = ", ".join(
             ["const ToastCtx *c", "const int64_t i"] + [f"{t.cpp} v_{n}" for n, t in zip(names, types)]
         )
@@ -1955,8 +1982,7 @@ class Compiler:
         if ret != NONE:
             code.append(f"  return {ret.zero};")
         code.append("}")
-        self.helper_code.append("\n".join(code))
-        self.helpers[key] = (cpp_name, ret)
+        return "\n".join(code)
 
     def _declare(self, name, t, node):
         if t == NONE:
@@ -2345,8 +2371,7 @@ class Compiler:
         if f is None:
             if s.value is not None:
                 self.err("return with a value is only allowed inside def helpers", s)
-            self.uses_return = True  # Ends this element.
-            self.line("goto toast_next;")
+            self.line(self._return_main())
             return
         if s.value is None:
             if f["ret"] not in (None, NONE):

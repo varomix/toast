@@ -2304,3 +2304,133 @@ class TestBlenderVolumes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------- shader node
+
+from toast.shader import compile_shader  # noqa: E402
+
+
+class TestShaderCompiler(unittest.TestCase):
+    """Toast code for ShaderNodeToast: the signature and the generated shader function."""
+
+    def body(self, code):
+        r = compile_shader(code)
+        return r.source.split("#endif\n", 1)[1], r.signature
+
+    def assertError(self, code, fragment, line=None):
+        with self.assertRaises(toast.ToastError) as cm:
+            compile_shader(code)
+        self.assertIn(fragment, str(cm.exception))
+        if line is not None:
+            self.assertEqual(cm.exception.line, line)
+
+    def test_signature(self):
+        _, sig = self.body('''k = param("k", 3, min=1)
+c = param("tint", (1.0, 0.5, 0.25, 1.0))
+@wear: vec3
+output("color", c * float(k) * noise(@generated))
+output("w", @wear + @position)
+output("t", @time)
+''')
+        self.assertEqual(sig["run_over"], "shader")
+        self.assertRegex(sig["function"], r"^toast_[0-9a-f]{16}$")
+        self.assertEqual([(p["name"], p["type"], p["min"]) for p in sig["params"]],
+                         [("k", "int", 1), ("tint", "vec4", None)])  # fmt: skip
+        self.assertEqual([(i["name"], i["kind"], i["type"]) for i in sig["inputs"]],
+                         [("generated", "builtin", "vec3"), ("wear", "attribute", "vec3"),
+                          ("position", "builtin", "vec3"), ("time", "builtin", "float")])  # fmt: skip
+        self.assertEqual([(o["name"], o["type"]) for o in sig["outputs"]],
+                         [("color", "vec4"), ("w", "vec3"), ("t", "float")])  # fmt: skip
+        self.assertTrue(sig["uses"]["time"])
+
+    def test_function_arguments_and_dialect(self):
+        body, sig = self.body('''def f(x: vec3) -> vec3:
+    return x.zyx * param("s", 2.0)
+v = voronoi(@uv * 3.0)
+@m: float
+output("c", f(v.color) + vec3(@m))
+''')
+        name = sig["function"]
+        self.assertIn(f"void {name}(float in_s, float3 s_uv, float4 r_m, _ref(float3, o_c))", body)
+        # Named attributes come as a float4 and are read like the Attribute node's Fac.
+        self.assertIn("float a_m = (r_m.x + r_m.y + r_m.z) / 3.0f;", body)
+        self.assertIn(f"float3 {name}_fn_f_0({name}_P p, float3 v_x)", body)
+        self.assertIn("v_x.zyx", body)
+        self.assertIn("v_v.f_color", body)
+        for cpp in ("::", "int32_t", "int64_t", "swz", "/*", "goto"):
+            self.assertNotIn(cpp, body)
+
+    def test_name_follows_code(self):
+        a = compile_shader('output("c", 1.0)\n').signature["function"]
+        self.assertEqual(a, compile_shader('output("c", 1.0)\n').signature["function"])
+        self.assertNotEqual(a, compile_shader('output("c", 2.0)\n').signature["function"])
+
+    def test_return_ends_the_function(self):
+        body, _ = self.body('if @uv.x > 0.5:\n    output("c", 1.0)\n    return\noutput("c", 0.5)\n')
+        self.assertIn("return;", body)
+
+    def test_errors(self):
+        self.assertError('@position = vec3(0.0)\n', "can't write attributes", 1)
+        self.assertError('x = point_attr(0, "position", 0)\n', "no geometry in a shader", 1)
+        self.assertError('q = quat_euler(vec3(0.0))\n', "quat and mat4", 1)
+        self.assertError('xs = [1.0, 2.0]\n', "lists aren't supported", 1)
+        self.assertError('xs = [0.0] * 4\n', "lists aren't supported", 1)
+        self.assertError('output("c", float(@index))\n', "@index doesn't exist in a shader", 1)
+        self.assertError('output("c", vec2(1.0, 2.0))\n', "vec2 outputs", 1)
+        self.assertError('@uv: vec2\noutput("c", 1.0)\n', "@uv is a vec3", 1)
+        self.assertError('@w: int\noutput("c", 1.0)\n', "float, vec3 or vec4", 1)
+        self.assertError('def f() -> float:\n    return @uv.x\noutput("c", f())\n',
+                         "can't be used inside def", 2)  # fmt: skip
+
+
+@unittest.skipUnless(_blender_has_toast_node(), "Blender with GeometryNodeToast not found")
+class TestBlenderShader(unittest.TestCase):
+    """ShaderNodeToast in EEVEE: renders compared with the same values made with Blender's nodes."""
+
+    @classmethod
+    def setUpClass(cls):
+        script = Path(__file__).resolve().parent / "blender_shader_check.py"
+        cls.out = tempfile.TemporaryDirectory(prefix="toast-shader-")
+        cls.r, cls.logs = {}, ""
+        for flags, extra in ((["--enable-autoexec"], []), ([], ["untrusted"])):
+            proc = subprocess.run(
+                [BLENDER, "-b", "--factory-startup", *flags, "--python-exit-code", "1",
+                 "--python", str(script), "--", cls.out.name, *extra],
+                capture_output=True, text=True, timeout=600,
+            )  # fmt: skip
+            lines = [ln[len("TOASTSHADER "):] for ln in proc.stdout.splitlines()
+                     if ln.startswith("TOASTSHADER {")]  # fmt: skip
+            if proc.returncode != 0 or "TOASTSHADER done" not in proc.stdout:
+                raise AssertionError(proc.stdout[-4000:] + proc.stderr[-3000:])
+            cls.logs += proc.stdout
+            for ln in lines:
+                r = json.loads(ln)
+                cls.r[r["case"]] = r
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.out.cleanup()
+
+    def test_no_shader_compile_errors(self):
+        self.assertNotIn("gpu.shader", "\n".join(
+            ln for ln in self.logs.splitlines() if "ERROR" in ln))  # fmt: skip
+
+    def test_matches_blender_nodes(self):
+        for case in ("generated", "noise", "fbm", "voronoi_color", "voronoi_distance", "attribute",
+                     "params", "linked_param", "helpers_loops", "frame", "two_nodes", "world"):
+            with self.subTest(case=case):
+                self.assertEqual(self.r[case]["error"], "")
+                self.assertEqual(self.r[case]["max_diff"], 0.0)
+
+    def test_bump(self):
+        # The render buffer is half float, so the bumped normals differ in the last bits.
+        self.assertEqual(self.r["bump_errors"]["error"], "")
+        self.assertLess(self.r["bump"]["max_diff"], 2e-3)
+        self.assertGreater(self.r["bump"]["spread"], 0.1)
+
+    def test_compile_error_on_node(self):
+        self.assertIn("'nope' is not a Toast builtin", self.r["error"]["error"])
+
+    def test_untrusted_file_doesnt_run_code(self):
+        self.assertEqual(self.r["untrusted"]["max_diff"], 0.0)

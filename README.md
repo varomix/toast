@@ -28,6 +28,9 @@ toast/
                     External backend); build_source() writes self-contained C++ that the fork's
                     built-in compiler (libtoast_jit) compiles in memory
   harness.py        ctypes host: binding, chunks on threads, nearpoints, command merge
+  shader.py         shader node code: the compiler's checks and expressions, emitted as one
+                    function in Blender's portable shader dialect (EEVEE, GLSL and Metal)
+  shader_lib.py     the shader functions' runtime (noise, hashes, math), as in toast_rt.h
   runtime/toast_rt.h  ABI, vector math, Blender-exact noise and hashes
 tests/
   test_toast.py     python3 -m unittest discover -s tests -v
@@ -192,6 +195,17 @@ Euclidean, detail 0, randomness `r`; distance, color and position outputs). Scal
   `__grid_<name>` (the grid on the voxels, read at each voxel's index in the grid's own index
   space; zeros if missing or of the other kind) and `__n0`..`__n5` (voxel number of the +x, -x,
   +y, -y, +z, -z neighbor, or -1): signature attrs with `"grid": true`, filled by the node.
+
+### Shader node (0.20, no ABI change)
+
+`ShaderNodeToast` stores `signature` and `gpu_source` (written by the add-on). The signature has
+`"run_over": "shader"`, `function` (`toast_<hash of the code>`), `params`, `inputs` (`name`,
+`kind` "builtin" or "attribute", `type`) and `outputs` (`name`, `type`). The node calls
+`function(params..., inputs..., outputs...)` through the fork's `GPU_stack_link_source`, which
+puts `gpu_source` (the runtime and the function, each in an include guard) into the material's
+generated shader. Built-in inputs come from the Geometry, Texture Coordinate and Scene Time
+library functions; named attributes are passed as float4 and converted by the function (as the
+Attribute node does). Not in Cycles yet; only in trusted files.
 
 ## Measurements (2026-11-24, 32 threads, g++ 14, fork 5.3)
 
