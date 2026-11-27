@@ -2452,6 +2452,45 @@ class TestBlenderShader(unittest.TestCase):
         self.assertGreater(self.cycles["noise"]["mean"], 0.3)
 
 
+@unittest.skipUnless(_blender_has_toast_node() and sys.platform.startswith("linux")
+                     and os.environ.get("TOAST_TEST_OPTIX"),
+                     "set TOAST_TEST_OPTIX=1 with an NVIDIA GPU (builds OptiX kernels the first "
+                     "time: minutes)")  # fmt: skip
+class TestBlenderShaderOptix(unittest.TestCase):
+    """ShaderNodeToast in Cycles on an NVIDIA GPU with OptiX, against Blender's nodes on OptiX."""
+
+    @classmethod
+    def setUpClass(cls):
+        script = Path(__file__).resolve().parent / "blender_shader_check.py"
+        with tempfile.TemporaryDirectory(prefix="toast-optix-") as out:
+            proc = subprocess.run(
+                [BLENDER, "-b", "--factory-startup", "--enable-autoexec", "--python-exit-code",
+                 "1", "--python", str(script), "--", out, "optix"],
+                capture_output=True, text=True, timeout=3600,
+            )  # fmt: skip
+        if proc.returncode != 0 or "TOASTSHADER done" not in proc.stdout:
+            raise AssertionError(proc.stdout[-4000:] + proc.stderr[-3000:])
+        cls.r = {}
+        for ln in proc.stdout.splitlines():
+            if ln.startswith("TOASTSHADER {"):
+                r = json.loads(ln[len("TOASTSHADER "):])
+                cls.r[r["case"]] = r
+
+    def test_matches_blender_nodes(self):
+        # Measured: exact or within 6e-8 (bump 1.3e-6, the bumped normals).
+        for case in ("generated", "noise", "fbm", "voronoi_color", "voronoi_distance", "attribute",
+                     "params", "linked_param", "helpers_loops", "frame", "two_nodes", "world",
+                     "bump"):
+            with self.subTest(case=case):
+                self.assertEqual(self.r[case]["error"], "")
+                self.assertLessEqual(self.r[case]["max_diff"], 1e-5)
+        self.assertGreater(self.r["noise"]["mean"], 0.3)
+        self.assertGreater(self.r["bump"]["spread"], 0.1)
+
+    def test_compile_error_on_node(self):
+        self.assertIn("'nope' is not a Toast builtin", self.r["error"]["error"])
+
+
 @unittest.skipUnless(_blender_has_toast_node() and sys.platform == "darwin"
                      and os.environ.get("TOAST_TEST_METAL"),
                      "set TOAST_TEST_METAL=1 on a Mac (builds Metal kernels: minutes)")  # fmt: skip

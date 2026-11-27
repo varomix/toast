@@ -6,7 +6,8 @@
 
     blender -b --factory-startup --enable-autoexec --python tests/blender_shader_check.py -- OUT
     blender -b --factory-startup --python tests/blender_shader_check.py -- OUT untrusted
-    (add "cycles" after OUT for Cycles on the CPU, "metal" for Cycles on the Metal GPU)
+    (add "cycles" after OUT for Cycles on the CPU, "metal" for Cycles on the Metal GPU,
+    "optix" for Cycles on an NVIDIA GPU with OptiX)
 
 Renders a plane (seen from above, orthographic, 32x32, one sample) whose material emits the
 Toast node's output, and the same with Blender's own nodes where there is one, and prints one
@@ -25,9 +26,11 @@ from toast import blender_addon as ba  # noqa: E402
 
 ARGS = sys.argv[sys.argv.index("--") + 1:]
 OUT = Path(ARGS[0])
-# "cycles": render with Cycles on the CPU instead of EEVEE; "metal": Cycles on the Metal GPU.
+# "cycles": render with Cycles on the CPU instead of EEVEE; "metal", "optix": Cycles on the GPU.
 METAL = "metal" in ARGS
-CYCLES = "cycles" in ARGS or METAL
+OPTIX = "optix" in ARGS
+GPU = "METAL" if METAL else ("OPTIX" if OPTIX else None)
+CYCLES = "cycles" in ARGS or GPU is not None
 OUT.mkdir(parents=True, exist_ok=True)
 RES = 32
 
@@ -36,12 +39,12 @@ scene = bpy.context.scene
 if CYCLES:
     scene.render.engine = "CYCLES"
     scene.cycles.device = "CPU"
-    if METAL:
+    if GPU:
         prefs = bpy.context.preferences.addons["cycles"].preferences
-        prefs.compute_device_type = "METAL"
+        prefs.compute_device_type = GPU
         prefs.get_devices()
         for d in prefs.devices:
-            d.use = d.type == "METAL"
+            d.use = d.type == GPU
         scene.cycles.device = "GPU"
     scene.cycles.samples = 1
     scene.cycles.use_denoising = False
@@ -75,7 +78,7 @@ scene.camera = cam
 _count = 0
 DRY = False
 holder = None
-if METAL:
+if GPU:
     bpy.ops.mesh.primitive_plane_add(size=0.01, location=(0, 0, -50))
     holder = bpy.context.object
     holder.visible_camera = False
@@ -368,10 +371,10 @@ output("c", c)
     report("world", max_diff=diff(px, [(0.5, 0.25, 0.125, 1.0)] * len(px)), error=wnode.error)
 
 
-if METAL:
-    # Metal builds kernels for the scene's set of Toast functions (minutes). A dry run first
-    # leaves every case's material on a hidden holder object, so the set doesn't change between
-    # cases and the kernels are built once.
+if GPU:
+    # GPUs load other kernels when a scene gets its first Toast node or loses its last. A dry run
+    # first leaves every case's material on a hidden holder object, so the scene always has
+    # Toast nodes and the kernels are loaded once.
     DRY = True
     run_cases()
     DRY = False
