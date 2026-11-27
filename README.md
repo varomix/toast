@@ -259,6 +259,26 @@ when it changes.
 | 655k | all | 2.8 ms | 25.4 ms | 9.1x |
 | 655k | 1 | 14.5 ms | 204.1 ms | 14.1x |
 
+Shader node (2026-11-27, MacBook M3 Max, `tests/bench_shader.py`): a plane filling a 1920x1080
+frame emits a texture, written as a Toast node and as the same tree of Blender nodes (the
+renders match pixel for pixel). "Light" is one Noise Texture; "heavy" is a domain warp (3 noises)
+into an fbm of detail 8 and two Voronoi, mixed (12 nodes, 8 lines of Toast). Best of 5 renders
+after warming up; Metal with Cycles' default kernel optimization (FULL).
+
+| Engine | Flat | Toast kernels only | Constant Toast node | Light: Toast / nodes | Heavy: Toast / nodes | Heavy, texture alone: nodes / Toast |
+| --- | --- | --- | --- | --- | --- | --- |
+| Cycles CPU (16 samples) | 0.51 s | 0.50 s | 0.57 s | 0.82 / 0.72 s | 1.73 / 2.19 s | 1.4x |
+| Cycles Metal (256 samples) | 1.25 s | 1.27 s | 1.48 s | 1.55 / 1.61 s | 2.56 / 3.47 s | 1.7x |
+| EEVEE (1024 samples) | 4.60 s | 4.99 s | 4.76 s | 4.81 / 4.59 s | 7.02 / 7.61 s | (noise) |
+
+Cycles runs node trees through its SVM interpreter, one node at a time; the Toast node is one
+compiled function, so the more nodes it replaces, the more it gains. A single node breaks even,
+since calling Toast has a cost of its own (packing values, and on Metal a call through a
+function table). EEVEE compiles both to the same kind of GPU code: no real difference (runs vary
+by about 0.4 s). This is a best case: with lighting and bounces the texture is a smaller part of
+the render. On Metal with kernel optimization OFF, the kernels of a scene with Toast nodes are
+~1.6x slower everywhere (the default, FULL, removes that).
+
 Compile of the noise displace kernel: ~0.1 s with the fork's built-in compiler (0.4 s with g++); reopening a
 file with the kernel cached costs a few ms.
 Read attributes are bound as views of Blender's arrays (copies only for snapshots, type
