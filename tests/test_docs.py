@@ -68,6 +68,9 @@ class TestGuide(unittest.TestCase):
             run_over = next((k for k in ("points", "faces", "curves", "instances", "voxels", "geometry")
                              if f"Run Over: {k.title()}" in first), "points")  # fmt: skip
             with self.subTest(kernel=f"{path.parent.name}/{path.name}"):
+                if "Run Over: Shader" in first:
+                    compile_shader(code, collect_libraries(code, libs.get))
+                    continue
                 toast.compile_source(code, run_over=run_over,
                                      libs=collect_libraries(code, libs.get))  # fmt: skip
 

@@ -1388,6 +1388,238 @@ def fire():
     ])
     save("17_fire")
 
+# --- Shader node examples ----------------------------------------------------------------------
+
+
+def shader_toast(nt, src, loc, params=None):
+    """A shader editor Toast node running examples/src/<src>.py."""
+    path = SRC / f"{src}.py"
+    text = bpy.data.texts.get(path.name) or bpy.data.texts.new(path.name)
+    text.clear()
+    text.write(path.read_text())
+    text.cursor_set(0)
+    n = nt.nodes.new("ShaderNodeToast")
+    n.location = loc
+    n.label = path.stem.replace("_", " ").title()
+    n.width = 200
+    n.text = text
+    blender_addon.update_node(n, force=True)
+    if n.error:
+        raise RuntimeError(f"{src}: {n.error}")
+    for key, value in (params or {}).items():
+        n.inputs[key].default_value = value
+    return n
+
+
+def toast_material(name, src, bump=0.2, emission_only=False, params=None):
+    """A material whose Principled BSDF takes the Toast node's outputs by name: color, roughness,
+    metallic, emission and strength (Emission), height (through Bump). With `emission_only`, an
+    Emission shader of color and strength."""
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    out = nt.nodes["Material Output"]
+    out.location = (500, 0)
+    node = shader_toast(nt, src, (-450, 0), params)
+    outs = node.outputs
+    if emission_only:
+        nt.nodes.remove(nt.nodes["Principled BSDF"])
+        em = nt.nodes.new("ShaderNodeEmission")
+        em.location = (200, 0)
+        nt.links.new(outs["color"], em.inputs["Color"])
+        nt.links.new(outs["strength"], em.inputs["Strength"])
+        nt.links.new(em.outputs[0], out.inputs["Surface"])
+        return mat
+    bsdf = nt.nodes["Principled BSDF"]
+    bsdf.location = (150, 0)
+    for socket, target in (("color", "Base Color"), ("roughness", "Roughness"),
+                           ("metallic", "Metallic"), ("emission", "Emission Color"),
+                           ("strength", "Emission Strength")):  # fmt: skip
+        if socket in outs:
+            nt.links.new(outs[socket], bsdf.inputs[target])
+    if "height" in outs:
+        b = nt.nodes.new("ShaderNodeBump")
+        b.location = (-100, -350)
+        b.inputs["Strength"].default_value = bump
+        b.inputs["Distance"].default_value = 0.02
+        nt.links.new(outs["height"], b.inputs["Height"])
+        nt.links.new(b.outputs[0], bsdf.inputs["Normal"])
+    return mat
+
+
+def rounded_cube(name, location, size=1.0):
+    bpy.ops.mesh.primitive_cube_add(size=size, location=location)
+    obj = bpy.context.active_object
+    obj.name = name
+    bevel = obj.modifiers.new("Bevel", "BEVEL")
+    bevel.width = 0.12 * size
+    bevel.segments = 6
+    bevel.harden_normals = True
+    bpy.ops.object.shade_smooth()
+    return obj
+
+
+def ball(name, location, radius=0.6):
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=radius, location=location, segments=96, ring_count=48)
+    obj = bpy.context.active_object
+    obj.name = name
+    bpy.ops.object.shade_smooth()
+    return obj
+
+
+def materials():
+    new_file(240)
+    library("cells")
+    library("tiling")
+    items = [
+        ("Wood", rounded_cube, "materials/wood", {"bump": 0.12}),
+        ("Marble", ball, "materials/marble", {}),
+        ("Hex panels", rounded_cube, "materials/hex_panels", {"bump": 0.4}),
+        ("Lava rock", ball, "materials/lava_rock", {"bump": 0.6}),
+        ("Tiles", rounded_cube, "materials/tiles", {"bump": 0.3}),
+        ("Plasma", ball, "materials/plasma", {"emission_only": True}),
+    ]
+    for k, (name, shape, src, opts) in enumerate(items):
+        x = (k % 3 - 1) * 1.7
+        y = (k // 3) * 1.7
+        obj = shape(name, (x, y, 0.6 if shape is ball else 0.5))
+        # The wood cube shows its end grain (the rings) to the camera.
+        obj.rotation_euler.z = math.radians(55 if name == "Wood" else (25 if shape is rounded_cube else 0))
+        obj.data.materials.append(toast_material(name, src, **opts))
+    bpy.ops.mesh.primitive_plane_add(size=40)
+    bpy.context.active_object.data.materials.append(material("Floor", color=(0.06, 0.06, 0.065), roughness=0.35))
+    camera((0.0, -6.4, 3.4), (0, 0.85, 0.45), lens=42)
+    light("AREA", (-3, -3, 5), 500, rotation=(40, 0, -40), size=4)
+    light("AREA", (4, -1, 3), 150, rotation=(60, 0, 70), size=3, color=(0.8, 0.9, 1.0))
+    light("AREA", (0, 5, 4), 300, rotation=(-50, 0, 0), size=5, color=(1.0, 0.9, 0.8))
+    note([
+        "Materials: six procedural materials drawn by the shader editor's Toast node.",
+        "",
+        "Select an object and open the Shading workspace (or a Shader Editor): the Toast node's",
+        "outputs (color, roughness, height, ...) go into a Principled BSDF and a Bump node like any",
+        "texture. The code runs for every shading point, in EEVEE, the viewport and Cycles.",
+        "",
+        "wood.py        rings around an off-center trunk, warped by fbm; grain and pores",
+        "marble.py      veins where a turbulent sine wave crosses zero",
+        "hex_panels.py  a honeycomb (toast_lib.tiling) of brushed plates; some have pulsing lights",
+        "lava_rock.py   cells (toast_lib.cells: a 27-cell search in a helper) with glowing cracks",
+        "tiles.py       Truchet tiles: random quarter circles that join into a maze",
+        "plasma.py      domain warping through a cosine palette, flowing with @time",
+        "",
+        "Press Play: the lights, the lava and the plasma move with time.",
+        "Try: each node's parameters; link a parameter to another node (they take fields); edit",
+        "the code and watch the material update.",
+    ])
+    save("18_materials")
+
+
+def terrain():
+    new_file(240)
+    obj = mesh_object("Terrain")
+    t = Tree(obj, "Terrain")
+    grid = t.node("GeometryNodeMeshGrid", (-200, 0), **{"Size X": 10.0, "Size Y": 10.0,
+                                                         "Vertices X": 400, "Vertices Y": 400})
+    shape = t.toast("terrain/shape", (0, 0))
+    wet = t.toast("terrain/wetness", (250, 0))
+    t.link(grid.outputs[0], shape.inputs["Geometry"])
+    t.link(shape.outputs[0], wet.inputs["Geometry"])
+    smooth = t.node("GeometryNodeSetShadeSmooth", (500, 0))
+    t.link(wet.outputs[0], smooth.inputs["Geometry"])
+    setmat = t.node("GeometryNodeSetMaterial", (700, 0))
+    ground = toast_material("Ground", "terrain/ground", bump=0.15)
+    setmat.inputs["Material"].default_value = ground
+    t.link(smooth.outputs[0], setmat.inputs["Geometry"])
+    t.finish(setmat.outputs[0], 900)
+    obj.data.materials.append(ground)
+
+    # The sea, at the "sea" height of the ground material (0.04 of the shape's height 3).
+    bpy.ops.mesh.primitive_plane_add(size=200, location=(0, 0, 0.04 * 3.0))
+    sea = bpy.context.active_object
+    sea.name = "Sea"
+    water = toast_material("Water", "terrain/water", bump=0.05)
+    bsdf = water.node_tree.nodes["Principled BSDF"]
+    bsdf.inputs["Roughness"].default_value = 0.04
+    bsdf.inputs["IOR"].default_value = 1.33
+    sea.data.materials.append(water)
+
+    scene = bpy.context.scene
+    bg = scene.world.node_tree.nodes["Background"]
+    bg.inputs["Color"].default_value = (0.35, 0.45, 0.6, 1)
+    bg.inputs["Strength"].default_value = 0.6
+    camera((6.2, -6.8, 2.6), (-0.5, 0.8, 0.7), lens=30)
+    light("SUN", (0, 0, 10), 4.0, rotation=(68, 0, 140), size=2, color=(1.0, 0.88, 0.72))
+    note([
+        "Terrain: mountains made by a geometry node, painted by a shader node.",
+        "",
+        "The geometry Toast nodes make the shape and store attributes on it; the shader Toast node",
+        "reads them (@height, @wet) next to what every shading point has (@position, @normal)",
+        "and draws the detail per pixel, finer than the mesh.",
+        "",
+        "shape.py    (Points, geometry)  ridged noise mountains over hills; stores @height",
+        "wetness.py  (Points, geometry)  hollows and low ground from two rings of neighbors; @wet",
+        "ground.py   (shader, Ground)    sand, grass (lusher where wet), rock strata on steep",
+        "                                slopes, snow above the snow line on flat ground",
+        "water.py    (shader, Water)     moving waves for Bump, lighter near the shore",
+        "",
+        "Try: shape's seed, scale and height; ground's snow_line, rock_slope; edit ground.py and",
+        "watch only the material change, without recomputing the mesh.",
+    ])
+    save("19_terrain")
+
+
+def lava():
+    new_file(300)
+    library("cells")
+    obj = mesh_object("Lava")
+    t = Tree(obj, "Lava")
+    grid = t.node("GeometryNodeMeshGrid", (-200, 0), **{"Size X": 8.0, "Size Y": 8.0,
+                                                         "Vertices X": 160, "Vertices Y": 160})
+    ground = t.toast("lava/ground", (0, 0))
+    t.link(grid.outputs[0], ground.inputs["Geometry"])
+    sin, sout = t.sim_zone(250, 1100)
+    rin, rout = t.repeat_zone(450, 900, 20)
+    rin.label = "Steps per frame"
+    flow = t.toast("lava/flow", (650, 0))
+    t.link(ground.outputs[0], sin.inputs["Geometry"])
+    t.link(sin.outputs["Geometry"], rin.inputs["Geometry"])
+    t.link(rin.outputs["Geometry"], flow.inputs["Geometry"])
+    t.link(flow.outputs[0], rout.inputs["Geometry"])
+    t.link(rout.outputs["Geometry"], sout.inputs["Geometry"])
+    smooth = t.node("GeometryNodeSetShadeSmooth", (1300, 0))
+    t.link(sout.outputs["Geometry"], smooth.inputs["Geometry"])
+    setmat = t.node("GeometryNodeSetMaterial", (1500, 0))
+    mat = toast_material("Lava", "lava/lava", bump=0.3)
+    setmat.inputs["Material"].default_value = mat
+    t.link(smooth.outputs[0], setmat.inputs["Geometry"])
+    t.finish(setmat.outputs[0], 1700)
+    obj.data.materials.append(mat)
+
+    scene = bpy.context.scene
+    bg = scene.world.node_tree.nodes["Background"]
+    bg.inputs["Color"].default_value = (0.012, 0.012, 0.02, 1)
+    # AgX washes bright oranges out to cream; Punchy keeps the lava saturated.
+    scene.view_settings.look = "AgX - Punchy"
+    camera((2.4, -2.6, 1.9), (-0.1, 1.6, 0.1), lens=30)
+    light("SUN", (0, 0, 10), 1.2, rotation=(65, 0, -30), size=3, color=(0.6, 0.7, 1.0))
+    note([
+        "Lava: a flow pouring down a hillside, cooling from molten to a glowing crust to rock.",
+        "Press Play.",
+        "",
+        "The geometry Toast nodes simulate the lava and store @lava (thickness) and @heat on the",
+        "mesh; the shader Toast node turns them into light and crust, finer than the mesh.",
+        "",
+        "ground.py  (Points, geometry)  the hillside with gullies; @ground",
+        "flow.py    (Points, geometry)  in the Simulation Zone, 20 times a frame: lava trades with",
+        "                               its neighbors downhill, the hotter the faster; heat moves",
+        "                               with it and thin lava cools first; the vent pours in pulses",
+        "lava.py    (shader, Lava)      open lava where it's hottest, crust plates",
+        "                               (toast_lib.cells) with glowing cracks that close as it",
+        "                               cools, light colored by temperature, ash on bare ground",
+        "",
+        "Try: flow's rate, cooling, flow and vent; the material's glow and size (the plates).",
+    ])
+    save("20_lava")
+
 
 EXAMPLES = {
     "flocking": flocking,
@@ -1407,6 +1639,9 @@ EXAMPLES = {
     "smoke_trails": smoke_trails,
     "crawlers": crawlers,
     "fire": fire,
+    "materials": materials,
+    "terrain": terrain,
+    "lava": lava,
 }
 
 if __name__ == "__main__":

@@ -651,6 +651,10 @@ output("height", n)
   colors have no alpha: a vec4 parameter's alpha is 1 and an output's alpha is dropped.
 - Like the geometry node, the code only runs in trusted files (Auto Run Python Scripts).
 
+The examples 18 to 20 use it: [18_materials](../examples) (six materials, with shader
+libraries), [19_terrain](../examples) and [20_lava](../examples) (geometry nodes store
+attributes, the shader node draws them per pixel).
+
 ## Errors
 
 Errors name the line, and spellings from earlier Toast versions tell you the new name:

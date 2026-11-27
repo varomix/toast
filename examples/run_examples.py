@@ -66,19 +66,24 @@ if only is not None:
         o.hide_viewport = o.name != only
         o.hide_render = o.name != only
     examples = [o for o in examples if o.name == only]
-obj = examples[0]
+# Shader-only examples have no Toast example object: play the frames, nothing to time.
+obj = examples[0] if examples else None
 times = []
+geo = None
 for f in range(scene.frame_start, scene.frame_start + frames):
     t0 = time.perf_counter()
     scene.frame_set(f)
-    dg = bpy.context.evaluated_depsgraph_get()
-    ev = obj.evaluated_get(dg)
-    geo = ev.evaluated_geometry()
+    if obj is not None:
+        dg = bpy.context.evaluated_depsgraph_get()
+        ev = obj.evaluated_get(dg)
+        geo = ev.evaluated_geometry()
     times.append((time.perf_counter() - t0) * 1000)
 
 
 def counts(geo):
     out = {}
+    if geo is None:
+        return out
     if geo.mesh and len(geo.mesh.vertices):
         out["mesh_points"] = len(geo.mesh.vertices)
         out["mesh_faces"] = len(geo.mesh.polygons)

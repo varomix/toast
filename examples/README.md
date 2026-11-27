@@ -1,7 +1,8 @@
 # Toast examples
 
-Thirteen .blend files that show what Toast does, most of them inside Blender's Simulation Zones, and
-how far it goes. Open one in the Toast build of Blender, allow Auto Run Python Scripts (or trust
+Twenty .blend files that show what Toast does, most of them inside Blender's Simulation Zones, and
+how far it goes. The last three use the shader editor's Toast node, two of them together with
+geometry Toast nodes. Open one in the Toast build of Blender, allow Auto Run Python Scripts (or trust
 the file), and press Play. Each file has a text named **README** with what to look at and what to
 try. The Toast code is in the files as texts, and in [`src/`](src) for reading here.
 
@@ -24,6 +25,9 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
 | [15_smoke_trails](15_smoke_trails.blend) | Comets leaving smoke that swirls and fades | Points switching voxels on (`voxel_at`, `activate_voxel` in Run Over Points), a Voxels node filling them from the comets on Input 1, neighbors by `grid_voxel(@voxel ± 1)` (arrays), a grid that starts as one voxel and follows the smoke |
 | [16_crawlers](16_crawlers.blend) | Glowing trails crawling over Suzanne | A signed distance grid from Mesh to SDF Grid on Input 1 of Run Over Curves: `grid_gradient` as the surface normal, `sample_grid` to step back onto the surface, `extend_curve` trails, `random_surface_point` seeds |
 | [17_fire](17_fire.blend) | Flames from a flickering burner, cooling into smoke | The smoke example with combustion: `@fuel`, `@temperature` and `@flame` grids, fuel that burns above an ignition temperature, burning gas that expands (the divergence), blackbody light from the temperature grid in a Principled Volume; reuses three of the smoke's Toast files |
+| [18_materials](18_materials.blend) | Six procedural materials: wood, marble, sci-fi panels, lava rock, Truchet tiles, plasma | The shader Toast node: outputs into Principled BSDF and Bump, libraries in shader code (`toast_lib.cells`: a 27-cell search for cracks; `toast_lib.tiling`: box mapping and hexagons), `@object`, `@normal`, `@time` |
+| [19_terrain](19_terrain.blend) | A snowy mountain island in the sea | Geometry and shader Toast nodes together: the geometry nodes shape the island (ridged noise) and store `@height` and `@wet` (two rings of `point_neighbors`); the shader node reads them for sand, grass, rock strata and snow drawn per pixel; animated water |
+| [20_lava](20_lava.blend) | Lava pouring down a hillside, cooling from molten to glowing crust to rock | A Simulation Zone of lava that runs downhill (mass-conserving exchange with neighbors, the hotter the faster) storing `@lava` and `@heat`; the shader node turns them into crust plates whose cracks glow and close as they cool (`toast_lib.cells`) |
 
 <p>
   <img src="images/01_flocking.png" width="32%">
@@ -51,6 +55,11 @@ try. The Toast code is in the files as texts, and in [`src/`](src) for reading h
 </p>
 <p>
   <img src="images/17_fire.png" width="40%">
+  <img src="images/18_materials.png" width="40%">
+</p>
+<p>
+  <img src="images/19_terrain.png" width="40%">
+  <img src="images/20_lava.png" width="40%">
 </p>
 
 ## How far it goes

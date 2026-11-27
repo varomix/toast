@@ -1,4 +1,4 @@
-# A procedural texture for the shader editor's Toast node (EEVEE): cells, wood rings and wear.
+# A procedural texture for the shader editor's Toast node: cells, wood rings and wear.
 # Run Over: Shader
 scale = param("scale", 4.0)
 rings = param("rings", 12.0)
