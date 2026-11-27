@@ -6,7 +6,7 @@
 
     blender -b --factory-startup --enable-autoexec --python tests/blender_shader_check.py -- OUT
     blender -b --factory-startup --python tests/blender_shader_check.py -- OUT untrusted
-    (add "cycles" after OUT for Cycles on the CPU)
+    (add "cycles" after OUT for Cycles on the CPU, "metal" for Cycles on the Metal GPU)
 
 Renders a plane (seen from above, orthographic, 32x32, one sample) whose material emits the
 Toast node's output, and the same with Blender's own nodes where there is one, and prints one
@@ -25,8 +25,9 @@ from toast import blender_addon as ba  # noqa: E402
 
 ARGS = sys.argv[sys.argv.index("--") + 1:]
 OUT = Path(ARGS[0])
-# "cycles": render with Cycles on the CPU instead of EEVEE.
-CYCLES = "cycles" in ARGS
+# "cycles": render with Cycles on the CPU instead of EEVEE; "metal": Cycles on the Metal GPU.
+METAL = "metal" in ARGS
+CYCLES = "cycles" in ARGS or METAL
 OUT.mkdir(parents=True, exist_ok=True)
 RES = 32
 
@@ -35,6 +36,13 @@ scene = bpy.context.scene
 if CYCLES:
     scene.render.engine = "CYCLES"
     scene.cycles.device = "CPU"
+    if METAL:
+        prefs = bpy.context.preferences.addons["cycles"].preferences
+        prefs.compute_device_type = "METAL"
+        prefs.get_devices()
+        for d in prefs.devices:
+            d.use = d.type == "METAL"
+        scene.cycles.device = "GPU"
     scene.cycles.samples = 1
     scene.cycles.use_denoising = False
     scene.cycles.pixel_filter_type = "BOX"
@@ -65,11 +73,20 @@ scene.collection.objects.link(cam)
 scene.camera = cam
 
 _count = 0
+DRY = False
+holder = None
+if METAL:
+    bpy.ops.mesh.primitive_plane_add(size=0.01, location=(0, 0, -50))
+    holder = bpy.context.object
+    holder.visible_camera = False
+    holder.visible_shadow = False
 
 
 def render():
     """Render and return the pixels as a list of RES*RES (r, g, b, a)."""
     global _count
+    if DRY:
+        return [(0.0, 0.0, 0.0, 1.0)] * (RES * RES)
     _count += 1
     path = OUT / f"r{_count}.exr"
     scene.render.filepath = str(path)
@@ -92,6 +109,8 @@ def material(build):
     nt.links.new(emit.outputs[0], out.inputs["Surface"])
     plane.data.materials.clear()
     plane.data.materials.append(mat)
+    if holder is not None:
+        holder.data.materials.append(mat)
     return mat
 
 
@@ -109,6 +128,8 @@ def diff(a, b, channels=3):
 
 
 def report(case, **values):
+    if DRY:
+        return
     print("TOASTSHADER " + json.dumps({"case": case, **values}), flush=True)
 
 
@@ -195,51 +216,53 @@ if "untrusted" in ARGS:
     print("TOASTSHADER done", flush=True)
     sys.exit(0)
 
-compare("generated", 'output("c", vec4(@generated.x, @generated.y, param("b", 0.25), 1.0))\n',
-        generated_rg(0.25))  # fmt: skip
-compare("noise", 'n = noise(@generated * 4.0)\noutput("c", vec4(n, n, n, 1.0))\n', tex_noise())
-compare("fbm", 'output("c", fbm(@generated * 4.0, 3.5, 0.6, 2.2))\n',
-        tex_noise(detail=3.5, roughness=0.6, lacunarity=2.2))  # fmt: skip
-compare("voronoi_color", 'output("c", voronoi(@generated * 5.0, 0.8).color)\n',
-        tex_voronoi("Color"))  # fmt: skip
-compare("voronoi_distance", 'output("c", voronoi(@generated * 5.0, 0.8).distance)\n',
-        tex_voronoi("Distance"))  # fmt: skip
-def _wear_ref(nodes, links):
-    attr = attribute("wear")(nodes, links)
-    m = nodes.new("ShaderNodeMath")
-    m.operation = "MULTIPLY_ADD"
-    links.new(attr, m.inputs[0])
-    m.inputs[1].default_value = 0.5
-    m.inputs[2].default_value = 0.5
-    return m.outputs[0]
+def run_cases():
+    plane.hide_render = False
+    compare("generated", 'output("c", vec4(@generated.x, @generated.y, param("b", 0.25), 1.0))\n',
+            generated_rg(0.25))  # fmt: skip
+    compare("noise", 'n = noise(@generated * 4.0)\noutput("c", vec4(n, n, n, 1.0))\n', tex_noise())
+    compare("fbm", 'output("c", fbm(@generated * 4.0, 3.5, 0.6, 2.2))\n',
+            tex_noise(detail=3.5, roughness=0.6, lacunarity=2.2))  # fmt: skip
+    compare("voronoi_color", 'output("c", voronoi(@generated * 5.0, 0.8).color)\n',
+            tex_voronoi("Color"))  # fmt: skip
+    compare("voronoi_distance", 'output("c", voronoi(@generated * 5.0, 0.8).distance)\n',
+            tex_voronoi("Distance"))  # fmt: skip
+    def _wear_ref(nodes, links):
+        attr = attribute("wear")(nodes, links)
+        m = nodes.new("ShaderNodeMath")
+        m.operation = "MULTIPLY_ADD"
+        links.new(attr, m.inputs[0])
+        m.inputs[1].default_value = 0.5
+        m.inputs[2].default_value = 0.5
+        return m.outputs[0]
 
 
-compare("attribute", "@wear: float\noutput(\"c\", @wear * 0.5 + 0.5)\n", _wear_ref)
+    compare("attribute", "@wear: float\noutput(\"c\", @wear * 0.5 + 0.5)\n", _wear_ref)
 
 
-def set_params(node, nodes, links):
-    node.inputs["k"].default_value = 2
-    node.inputs["flip"].default_value = False
-    node.inputs["v"].default_value = (0.1, 0.2, 0.3)
+    def set_params(node, nodes, links):
+        node.inputs["k"].default_value = 2
+        node.inputs["flip"].default_value = False
+        node.inputs["v"].default_value = (0.1, 0.2, 0.3)
 
 
-compare("params", '''k = param("k", 3)
+    compare("params", '''k = param("k", 3)
 v = param("v", (0.5, 0.5, 0.5))
 flip = param("flip", True)
 output("c", vec3(1.0) - v if flip else v * float(k))
 ''', constant((0.2, 0.4, 0.6)), setup=set_params)
 
 
-def link_value(node, nodes, links):
-    val = nodes.new("ShaderNodeValue")
-    val.outputs[0].default_value = 0.375
-    links.new(val.outputs[0], node.inputs["x"])
+    def link_value(node, nodes, links):
+        val = nodes.new("ShaderNodeValue")
+        val.outputs[0].default_value = 0.375
+        links.new(val.outputs[0], node.inputs["x"])
 
 
-compare("linked_param", 'output("c", vec3(param("x", 0.0)))\n', constant((0.375,) * 3),
-        setup=link_value)  # fmt: skip
+    compare("linked_param", 'output("c", vec3(param("x", 0.0)))\n', constant((0.375,) * 3),
+            setup=link_value)  # fmt: skip
 
-compare("helpers_loops", '''def tri(x: float) -> float:
+    compare("helpers_loops", '''def tri(x: float) -> float:
     return abs(frac(x) - 0.5) * 2.0
 s = 0.0
 for i in range(4):
@@ -251,97 +274,106 @@ if s > 100.0:
 output("c", c)
 ''', constant(((1.0 + 0.75 + 0.5 + 0.25) / 4.0, 0.5, 0.0)))
 
-scene.frame_set(7)
-compare("frame", 'output("c", vec3(@frame / 100.0))\n', constant((0.07,) * 3))
-scene.frame_set(1)
+    scene.frame_set(7)
+    compare("frame", 'output("c", vec3(@frame / 100.0))\n', constant((0.07,) * 3))
+    scene.frame_set(1)
 
 
-# Two Toast nodes in one material (different code), plus the same code twice: one definition.
-def two_nodes(nodes, links):
-    a = toast_node(nodes, 'output("c", vec3(0.25, 0.0, 0.0))\n', "a")
-    b = toast_node(nodes, 'output("c", vec3(0.0, 0.5, 0.0))\n', "b")
-    b2 = toast_node(nodes, 'output("c", vec3(0.0, 0.5, 0.0))\n', "b2")
-    add = nodes.new("ShaderNodeMix")
-    add.data_type = "RGBA"
-    add.blend_type = "ADD"
-    add.inputs["Factor"].default_value = 1.0
-    links.new(a.outputs["c"], add.inputs[6])
-    mix2 = nodes.new("ShaderNodeMix")
-    mix2.data_type = "RGBA"
-    mix2.blend_type = "ADD"
-    mix2.inputs["Factor"].default_value = 0.5
-    links.new(b.outputs["c"], mix2.inputs[6])
-    links.new(b2.outputs["c"], mix2.inputs[7])
-    links.new(mix2.outputs[2], add.inputs[7])
-    report("two_nodes_errors", error=a.error + b.error + b2.error)
-    return add.outputs[2]
+    # Two Toast nodes in one material (different code), plus the same code twice: one definition.
+    def two_nodes(nodes, links):
+        a = toast_node(nodes, 'output("c", vec3(0.25, 0.0, 0.0))\n', "a")
+        b = toast_node(nodes, 'output("c", vec3(0.0, 0.5, 0.0))\n', "b")
+        b2 = toast_node(nodes, 'output("c", vec3(0.0, 0.5, 0.0))\n', "b2")
+        add = nodes.new("ShaderNodeMix")
+        add.data_type = "RGBA"
+        add.blend_type = "ADD"
+        add.inputs["Factor"].default_value = 1.0
+        links.new(a.outputs["c"], add.inputs[6])
+        mix2 = nodes.new("ShaderNodeMix")
+        mix2.data_type = "RGBA"
+        mix2.blend_type = "ADD"
+        mix2.inputs["Factor"].default_value = 0.5
+        links.new(b.outputs["c"], mix2.inputs[6])
+        links.new(b2.outputs["c"], mix2.inputs[7])
+        links.new(mix2.outputs[2], add.inputs[7])
+        report("two_nodes_errors", error=a.error + b.error + b2.error)
+        return add.outputs[2]
 
 
-material(two_nodes)
-a = render()
-material(constant((0.25, 0.75, 0.0)))
-report("two_nodes", max_diff=diff(a, render()), error="")
+    material(two_nodes)
+    a = render()
+    material(constant((0.25, 0.75, 0.0)))
+    report("two_nodes", max_diff=diff(a, render()), error="")
 
 
-# A Toast height into the Bump node: the code is evaluated at offset positions too, so the bumped
-# normal must match the one from the same noise made with Blender's nodes.
-def bumped(height):
-    def build(nodes, links):
-        bump = nodes.new("ShaderNodeBump")
-        bump.inputs["Strength"].default_value = 1.0
-        bump.inputs["Distance"].default_value = 0.2
-        links.new(height(nodes, links), bump.inputs["Height"])
-        # Normal (in -1..1) shown as a color in 0..1.
-        m = nodes.new("ShaderNodeVectorMath")
-        m.operation = "MULTIPLY_ADD"
-        links.new(bump.outputs["Normal"], m.inputs[0])
-        m.inputs[1].default_value = (0.5, 0.5, 0.5)
-        m.inputs[2].default_value = (0.5, 0.5, 0.5)
-        return m.outputs[0]
-    return build
+    # A Toast height into the Bump node: the code is evaluated at offset positions too, so the bumped
+    # normal must match the one from the same noise made with Blender's nodes.
+    def bumped(height):
+        def build(nodes, links):
+            bump = nodes.new("ShaderNodeBump")
+            bump.inputs["Strength"].default_value = 1.0
+            bump.inputs["Distance"].default_value = 0.2
+            links.new(height(nodes, links), bump.inputs["Height"])
+            # Normal (in -1..1) shown as a color in 0..1.
+            m = nodes.new("ShaderNodeVectorMath")
+            m.operation = "MULTIPLY_ADD"
+            links.new(bump.outputs["Normal"], m.inputs[0])
+            m.inputs[1].default_value = (0.5, 0.5, 0.5)
+            m.inputs[2].default_value = (0.5, 0.5, 0.5)
+            return m.outputs[0]
+        return build
 
 
-def toast_height(nodes, links):
-    t = toast_node(nodes, 'output("h", fbm(@position * 3.0, 2.0))\n', "bump")
-    report("bump_errors", error=t.error)
-    return t.outputs["h"]
+    def toast_height(nodes, links):
+        t = toast_node(nodes, 'output("h", fbm(@position * 3.0, 2.0))\n', "bump")
+        report("bump_errors", error=t.error)
+        return t.outputs["h"]
 
 
-def nodes_height(nodes, links):
-    geo = nodes.new("ShaderNodeNewGeometry")
-    n = nodes.new("ShaderNodeTexNoise")
-    n.inputs["Scale"].default_value = 3.0
-    n.inputs["Detail"].default_value = 2.0
-    n.inputs["Distortion"].default_value = 0.0
-    links.new(geo.outputs["Position"], n.inputs["Vector"])
-    return n.outputs["Fac"]
+    def nodes_height(nodes, links):
+        geo = nodes.new("ShaderNodeNewGeometry")
+        n = nodes.new("ShaderNodeTexNoise")
+        n.inputs["Scale"].default_value = 3.0
+        n.inputs["Detail"].default_value = 2.0
+        n.inputs["Distortion"].default_value = 0.0
+        links.new(geo.outputs["Position"], n.inputs["Vector"])
+        return n.outputs["Fac"]
 
 
-material(bumped(toast_height))
-a = render()
-material(bumped(nodes_height))
-b = render()
-report("bump", max_diff=diff(a, b), spread=max(p[0] for p in a) - min(p[0] for p in a), error="")
+    material(bumped(toast_height))
+    a = render()
+    material(bumped(nodes_height))
+    b = render()
+    report("bump", max_diff=diff(a, b), spread=max(p[0] for p in a) - min(p[0] for p in a), error="")
 
-# An error keeps the material working (the node's outputs fall back to defaults).
-material(lambda nodes, links: toast_node(nodes, 'output("c", nope(1))\n', "bad").outputs.get("c")
-         or nodes.new("ShaderNodeRGB").outputs[0])  # fmt: skip
-bad = next(n for n in plane.data.materials[0].node_tree.nodes if n.bl_idname == "ShaderNodeToast")
-render()
-report("error", error=bad.error)
+    # An error keeps the material working (the node's outputs fall back to defaults).
+    material(lambda nodes, links: toast_node(nodes, 'output("c", nope(1))\n', "bad").outputs.get("c")
+             or nodes.new("ShaderNodeRGB").outputs[0])  # fmt: skip
+    bad = next(n for n in plane.data.materials[0].node_tree.nodes if n.bl_idname == "ShaderNodeToast")
+    render()
+    report("error", error=bad.error)
 
 
-# World shader: a Toast node in the world, seen where the plane isn't.
-plane.hide_render = True
-wt = world.node_tree
-for n in list(wt.nodes):
-    wt.nodes.remove(n)
-wnode = toast_node(wt.nodes, 'output("c", vec3(0.5, 0.25, param("b", 0.125)))\n', "world")
-bg = wt.nodes.new("ShaderNodeBackground")
-wout = wt.nodes.new("ShaderNodeOutputWorld")
-wt.links.new(wnode.outputs["c"], bg.inputs["Color"])
-wt.links.new(bg.outputs[0], wout.inputs["Surface"])
-px = render()
-report("world", max_diff=diff(px, [(0.5, 0.25, 0.125, 1.0)] * len(px)), error=wnode.error)
+    # World shader: a Toast node in the world, seen where the plane isn't.
+    plane.hide_render = True
+    wt = world.node_tree
+    for n in list(wt.nodes):
+        wt.nodes.remove(n)
+    wnode = toast_node(wt.nodes, 'output("c", vec3(0.5, 0.25, param("b", 0.125)))\n', "world")
+    bg = wt.nodes.new("ShaderNodeBackground")
+    wout = wt.nodes.new("ShaderNodeOutputWorld")
+    wt.links.new(wnode.outputs["c"], bg.inputs["Color"])
+    wt.links.new(bg.outputs[0], wout.inputs["Surface"])
+    px = render()
+    report("world", max_diff=diff(px, [(0.5, 0.25, 0.125, 1.0)] * len(px)), error=wnode.error)
 
+
+if METAL:
+    # Metal builds kernels for the scene's set of Toast functions (minutes). A dry run first
+    # leaves every case's material on a hidden holder object, so the set doesn't change between
+    # cases and the kernels are built once.
+    DRY = True
+    run_cases()
+    DRY = False
+run_cases()
 print("TOASTSHADER done", flush=True)

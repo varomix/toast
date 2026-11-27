@@ -2450,3 +2450,38 @@ class TestBlenderShader(unittest.TestCase):
         self.assertGreater(self.cycles["bump"]["spread"], 0.1)
         # A real render, not the outputs' defaults.
         self.assertGreater(self.cycles["noise"]["mean"], 0.3)
+
+
+@unittest.skipUnless(_blender_has_toast_node() and sys.platform == "darwin"
+                     and os.environ.get("TOAST_TEST_METAL"),
+                     "set TOAST_TEST_METAL=1 on a Mac (builds Metal kernels: minutes)")  # fmt: skip
+class TestBlenderShaderMetal(unittest.TestCase):
+    """ShaderNodeToast in Cycles on the Metal GPU, against Blender's nodes on Metal."""
+
+    @classmethod
+    def setUpClass(cls):
+        script = Path(__file__).resolve().parent / "blender_shader_check.py"
+        with tempfile.TemporaryDirectory(prefix="toast-metal-") as out:
+            proc = subprocess.run(
+                [BLENDER, "-b", "--factory-startup", "--enable-autoexec", "--python-exit-code",
+                 "1", "--python", str(script), "--", out, "metal"],
+                capture_output=True, text=True, timeout=3600,
+            )  # fmt: skip
+        if proc.returncode != 0 or "TOASTSHADER done" not in proc.stdout:
+            raise AssertionError(proc.stdout[-4000:] + proc.stderr[-3000:])
+        cls.r = {}
+        for ln in proc.stdout.splitlines():
+            if ln.startswith("TOASTSHADER {"):
+                r = json.loads(ln[len("TOASTSHADER "):])
+                cls.r[r["case"]] = r
+
+    def test_matches_blender_nodes(self):
+        # GPU math (fast math) rounds differently from Blender's nodes on the same GPU.
+        for case in ("generated", "noise", "fbm", "voronoi_color", "voronoi_distance", "attribute",
+                     "params", "linked_param", "helpers_loops", "frame", "two_nodes", "world",
+                     "bump"):
+            with self.subTest(case=case):
+                self.assertEqual(self.r[case]["error"], "")
+                self.assertLessEqual(self.r[case]["max_diff"], 1e-3)
+        self.assertGreater(self.r["noise"]["mean"], 0.3)
+        self.assertGreater(self.r["bump"]["spread"], 0.1)

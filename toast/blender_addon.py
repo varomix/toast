@@ -54,7 +54,7 @@ n = noise(@position * param("freq", 4.0))
 @height: float = n
 '''
 
-NEW_SHADER_TEXT = '''# Toast shader: runs for every shading point (EEVEE, Cycles on the CPU).
+NEW_SHADER_TEXT = '''# Toast shader: runs for every shading point (EEVEE, Cycles on the CPU and Metal).
 # @position, @uv, @generated... are the shading point's; param() makes an input socket,
 # output() an output socket. Connect the outputs to a shader.
 scale = param("scale", 5.0)
@@ -733,7 +733,7 @@ class NODE_PT_toast(bpy.types.Panel):
         op.tree = node.id_data.name
         op.node = node.name
         if is_shader_node(node):
-            layout.label(text="Runs for every shading point (EEVEE, Cycles CPU)")
+            layout.label(text="Runs for every shading point (EEVEE, Cycles CPU and Metal)")
         else:
             layout.prop(node, "run_over")
         prefs = _prefs()

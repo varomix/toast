@@ -642,11 +642,14 @@ output("height", n)
 - There is no geometry at a shading point: geometry reads and changes, lists, quat and mat4 are
   geometry node only.
 - The node feeds Bump like any texture: the code runs again at the offset positions.
-- **EEVEE, the viewport, and Cycles on the CPU.** In Cycles the code is compiled to native
-  code like the geometry node's (the built-in compiler, the first time a render uses it). On a
-  GPU device (Metal, CUDA, ...) its outputs are zero for now, and with Open Shading Language on
-  they are their default values. Cycles colors have no alpha: a vec4 parameter's alpha is 1 and
-  an output's alpha is dropped.
+- **EEVEE, the viewport, and Cycles on the CPU and on Metal (Apple GPUs).** On the CPU the code
+  is compiled to native code like the geometry node's, in a moment. On Metal it is compiled into
+  Cycles' GPU kernels: the first render after the Toast code of a scene changes waits for new
+  kernels ("Loading render kernels", a few minutes); renders after that, and going back to code
+  used before, are as fast as usual. While you work on the code, look at it in EEVEE or with the
+  CPU, and render with Metal when it's done. On other GPUs (CUDA, OptiX, HIP, oneAPI) the outputs
+  are zero for now, and with Open Shading Language on they are their default values. Cycles
+  colors have no alpha: a vec4 parameter's alpha is 1 and an output's alpha is dropped.
 - Like the geometry node, the code only runs in trusted files (Auto Run Python Scripts).
 
 ## Errors
@@ -662,7 +665,8 @@ Errors name the line, and spellings from earlier Toast versions tell you the new
 
 ## Limits
 
-- The shader node works in EEVEE, the viewport and Cycles on the CPU, not yet on Cycles GPUs.
+- The shader node works in EEVEE, the viewport, and Cycles on the CPU and Metal; not yet on other
+  Cycles GPUs. On Metal, new Toast code means new kernels (minutes).
 - Meshes, point clouds, curves, instances, Grease Pencil and volumes (grids of float, int, bool
   and vec3; Run Over Voxels and `sample_grid()`).
 - Run Over Instances changes the instances of the top-level geometry only, like Blender's
