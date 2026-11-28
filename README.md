@@ -226,6 +226,15 @@ functions in (`newComputePipelineStateWithAdditionalBinaryFunctions`) and fills 
 function table that `NODE_TOAST` calls through (`MetalAncillaries::ft_toast`). New Toast code
 only re-links: no kernel is built.
 
+Cycles OptiX (fork, 2026-11-27): plain OptiX shading runs in CUDA kernels, which can't call code
+compiled on its own, so a scene with Toast nodes shades in OptiX the way OSL does: Cycles' OSL
+OptiX modules are compiled with `__TOAST_NODES__` instead of OSL (SVM calling Toast). The same
+EEVEE functions become CUDA (`scene_source`'s CUDA prelude: vector types, GLSL builtins,
+swizzles as templates), compiled with NVRTC into one module of direct callables that is linked
+into the shading pipeline (`OptiXDevice::load_toast_functions`, ~65 ms for 14 functions);
+`NODE_TOAST` calls `optixDirectCall(2 + function_id)`. Matches Blender's nodes on OptiX within
+1.3e-6. CUDA, HIP and oneAPI write zeros; the Toast panel warns when Cycles uses one of them.
+
 ## Measurements (2026-11-24, 32 threads, g++ 14, fork 5.3)
 
 Noise displace (`n = noise(@position * freq); @position += @normal * n * amp; @height: float = n`) on an ico sphere,

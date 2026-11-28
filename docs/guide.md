@@ -642,12 +642,15 @@ output("height", n)
 - There is no geometry at a shading point: geometry reads and changes, lists, quat and mat4 are
   geometry node only.
 - The node feeds Bump like any texture: the code runs again at the offset positions.
-- **EEVEE, the viewport, and Cycles on the CPU and on Metal (Apple GPUs).** On the CPU the code
-  is compiled to native code like the geometry node's, in a moment. On Metal, the first render of
-  a scene with a Toast node waits once for Cycles' GPU kernels ("Loading render kernels", a few
-  minutes the first time on a machine, then cached); after that, changed Toast code is linked
-  into the loaded kernels in a moment. On other GPUs (CUDA, OptiX, HIP, oneAPI) the outputs
-  are zero for now, and with Open Shading Language on they are their default values. Cycles
+- **EEVEE, the viewport, and Cycles on the CPU, on Metal (Apple GPUs) and on OptiX (NVIDIA
+  GPUs).** On the CPU the code is compiled to native code like the geometry node's, in a moment.
+  On Metal and OptiX, the first render of a scene with a Toast node waits once for Cycles' GPU
+  kernels ("Loading render kernels", minutes the first time on a machine, then cached); after
+  that, changed Toast code is linked into the loaded kernels in a moment. OptiX needs the CUDA
+  toolkit (its runtime compiler, NVRTC) installed. With Cycles on CUDA, HIP or oneAPI the outputs
+  are zero, and the Toast panel says so: on NVIDIA, use OptiX instead of CUDA (Preferences >
+  System > Cycles Render Devices); every NVIDIA GPU Cycles supports runs OptiX. With Open Shading
+  Language on the outputs are their default values. Cycles
   colors have no alpha: a vec4 parameter's alpha is 1 and an output's alpha is dropped.
 - Like the geometry node, the code only runs in trusted files (Auto Run Python Scripts).
 
@@ -668,8 +671,8 @@ Errors name the line, and spellings from earlier Toast versions tell you the new
 
 ## Limits
 
-- The shader node works in EEVEE, the viewport, and Cycles on the CPU and Metal; not yet on other
-  Cycles GPUs. On Metal, the first scene with a Toast node builds kernels once (minutes).
+- The shader node works in EEVEE, the viewport, and Cycles on the CPU, Metal and OptiX; not on
+  CUDA, HIP or oneAPI. On GPUs, the first scene with a Toast node builds kernels once (minutes).
 - Meshes, point clouds, curves, instances, Grease Pencil and volumes (grids of float, int, bool
   and vec3; Run Over Voxels and `sample_grid()`).
 - Run Over Instances changes the instances of the top-level geometry only, like Blender's

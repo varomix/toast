@@ -54,7 +54,7 @@ n = noise(@position * param("freq", 4.0))
 @height: float = n
 '''
 
-NEW_SHADER_TEXT = '''# Toast shader: runs for every shading point (EEVEE, Cycles on the CPU and Metal).
+NEW_SHADER_TEXT = '''# Toast shader: runs for every shading point (EEVEE; Cycles on the CPU, Metal, OptiX).
 # @position, @uv, @generated... are the shading point's; param() makes an input socket,
 # output() an output socket. Connect the outputs to a shader.
 scale = param("scale", 5.0)
@@ -676,6 +676,25 @@ class TOAST_OT_show_error(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# Cycles GPU backends that call Toast functions; on the others the outputs are zero.
+CYCLES_TOAST_GPUS = ("METAL", "OPTIX")
+
+
+def cycles_gpu_without_toast(scene, context=None):
+    """The Cycles compute device type (like "CUDA") if `scene` renders with Cycles on a GPU
+    backend that doesn't run Toast shader nodes, else ""."""
+    context = context or bpy.context
+    if scene is None or scene.render.engine != "CYCLES":
+        return ""
+    if getattr(getattr(scene, "cycles", None), "device", "CPU") != "GPU":
+        return ""
+    addon = context.preferences.addons.get("cycles")
+    device = getattr(addon.preferences, "compute_device_type", "NONE") if addon else "NONE"
+    if device in ("NONE", *CYCLES_TOAST_GPUS):
+        return ""
+    return device
+
+
 def _draw_status(layout, node):
     """Compile state and error of a node, with a button to the error's line."""
     state, detail = _status.get(node.as_pointer(), ("", ""))
@@ -733,7 +752,14 @@ class NODE_PT_toast(bpy.types.Panel):
         op.tree = node.id_data.name
         op.node = node.name
         if is_shader_node(node):
-            layout.label(text="Runs for every shading point (EEVEE, Cycles CPU and Metal)")
+            layout.label(text="Runs for every shading point (EEVEE; Cycles CPU, Metal, OptiX)")
+            device = cycles_gpu_without_toast(context.scene, context)
+            if device:
+                box = layout.box()
+                box.alert = True
+                box.label(text=f"Cycles on {device} renders Toast nodes as zero", icon="ERROR")
+                box.label(text="Use OptiX: Preferences > System > Cycles Render", icon="BLANK1")
+                box.label(text="Devices (any NVIDIA GPU Cycles supports)", icon="BLANK1")
         else:
             layout.prop(node, "run_over")
         prefs = _prefs()
